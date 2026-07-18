@@ -78,7 +78,7 @@ namespace Firefly
                 Widgets.Label(testStatusRect, testStatus);
 
             listing.Gap(18f);
-            listing.Label("Tip: OpenRouter (openrouter.ai) gives you one key with access to many models, including free-tier options.");
+            listing.Label("Tip: OpenRouter (openrouter.ai) gives you one key with access to many models. Browse models at openrouter.ai/models.");
 
             listing.End();
         }
