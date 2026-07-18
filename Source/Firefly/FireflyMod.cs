@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using Verse;
@@ -11,6 +12,18 @@ namespace Firefly
 
         private bool showApiKey = false;
         private string testStatus = "";
+
+        private static readonly List<(string Label, string Id)> PresetModels = new List<(string, string)>
+        {
+            ("Xiaomi MiMo v2.5",                   "xiaomi/mimo-v2.5"),
+            ("Google Gemini 2.0 Flash",             "google/gemini-2.0-flash"),
+            ("Google Gemini 2.5 Flash",             "google/gemini-2.5-flash"),
+            ("Claude Haiku 4.5",                    "anthropic/claude-haiku-4-5"),
+            ("GPT-4o Mini",                         "openai/gpt-4o-mini"),
+            ("DeepSeek Chat",                       "deepseek/deepseek-chat"),
+            ("Llama 3.1 8B (free)",                 "meta-llama/llama-3.1-8b-instruct:free"),
+            ("Gemini 2.0 Flash Exp (free)",         "google/gemini-2.0-flash-exp:free"),
+        };
 
         public FireflyMod(ModContentPack content) : base(content)
         {
@@ -54,9 +67,24 @@ namespace Firefly
 
             listing.Gap();
 
-            // Model
+            // Model — text field + preset picker
             listing.Label("Model");
-            Settings.Model = listing.TextEntry(Settings.Model);
+            var modelRow = listing.GetRect(Text.LineHeight);
+            var modelField = modelRow.LeftPartPixels(modelRow.width - 80f);
+            var modelPickBtn = new Rect(modelRow.xMax - 76f, modelRow.y, 76f, modelRow.height);
+
+            Settings.Model = Widgets.TextField(modelField, Settings.Model);
+
+            if (Widgets.ButtonText(modelPickBtn, "Presets ▼"))
+            {
+                var options = new List<FloatMenuOption>();
+                foreach (var (label, id) in PresetModels)
+                {
+                    var modelId = id;
+                    options.Add(new FloatMenuOption($"{label}  —  {modelId}", () => Settings.Model = modelId));
+                }
+                Find.WindowStack.Add(new FloatMenu(options));
+            }
 
             listing.Gap(18f);
 
@@ -78,7 +106,7 @@ namespace Firefly
                 Widgets.Label(testStatusRect, testStatus);
 
             listing.Gap(18f);
-            listing.Label("Tip: OpenRouter (openrouter.ai) gives you one key with access to many models. Browse models at openrouter.ai/models.");
+            listing.Label("Tip: OpenRouter (openrouter.ai) gives you one key with access to many models. Browse at openrouter.ai/models.");
 
             listing.End();
         }
