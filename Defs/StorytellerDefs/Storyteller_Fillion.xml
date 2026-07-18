@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Defs>
+  <StorytellerDef ParentName="BaseStoryteller">
+    <defName>Fillion</defName>
+    <label>Fillion</label>
+    <description>Fillion remembers. She keeps a ledger of every meaningful decision your colony makes and every life you touch. Her events aren't random — they're consequences.
+
+Requires the Firefly mod settings to be configured with an API key.</description>
+    <comps>
+      <li Class="Firefly.StorytellerCompProperties_Fillion" />
+    </comps>
+  </StorytellerDef>
+</Defs>
