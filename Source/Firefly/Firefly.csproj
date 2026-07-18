@@ -12,18 +12,30 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Set RimWorldPath in a local .csproj.user file or pass via CLI:            -->
-    <!-- dotnet build /p:RimWorldPath="C:\Program Files (x86)\Steam\steamapps\common\RimWorld" -->
-    <Reference Include="Assembly-CSharp">
+    <!-- Windows: dotnet build /p:RimWorldPath="C:\Program Files (x86)\Steam\steamapps\common\RimWorld" -->
+    <!-- Linux:   dotnet build /p:RimWorldPath="/home/USER/.local/share/Steam/steamapps/common/RimWorld" -->
+    <Reference Include="Assembly-CSharp" Condition="'$(OS)' == 'Windows_NT'">
       <HintPath>$(RimWorldPath)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="UnityEngine.CoreModule">
+    <Reference Include="Assembly-CSharp" Condition="'$(OS)' != 'Windows_NT'">
+      <HintPath>$(RimWorldPath)/RimWorldLinux_Data/Managed/Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule" Condition="'$(OS)' == 'Windows_NT'">
       <HintPath>$(RimWorldPath)\RimWorldWin64_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="0Harmony">
+    <Reference Include="UnityEngine.CoreModule" Condition="'$(OS)' != 'Windows_NT'">
+      <HintPath>$(RimWorldPath)/RimWorldLinux_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="0Harmony" Condition="'$(OS)' == 'Windows_NT'">
       <HintPath>$(RimWorldPath)\Mods\brrainz.harmony\Current\Assemblies\0Harmony.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="0Harmony" Condition="'$(OS)' != 'Windows_NT'">
+      <HintPath>$(HarmonyPath)/Current/Assemblies/0Harmony.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
