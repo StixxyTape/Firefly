@@ -3,7 +3,7 @@
   <name>Firefly</name>
   <author>Stixxy</author>
   <packageId>Stixxy.Firefly</packageId>
-  <description>Fillion remembers. She tracks the choices your colony makes, the lives you affect, the deals you break. Give it time — what you've done will come back to you.
+  <description>Fillion remembers. He tracks the choices your colony makes, the lives you affect, the deals you break. Give it time — what you've done will come back to you.
 
 An LLM-powered storyteller that accumulates your colony's history across an entire playthrough and shapes events around it. Requires your own API key (OpenRouter recommended).</description>
   <supportedVersions>
