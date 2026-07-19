@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using HarmonyLib;
 using RimWorld;
@@ -219,7 +220,8 @@ namespace Firefly
             if (playerFaction == null) { sb.AppendLine("Unable to determine."); sb.AppendLine(); return; }
 
             var hostiles = map.mapPawns?.AllPawnsSpawned
-                ?.Where(p => p != null && !p.Dead && !p.Downed && p.HostileTo(playerFaction))
+                ?.Where(p => p != null && !p.Dead && !p.Downed && p.HostileTo(playerFaction)
+                          && !map.fogGrid.IsFogged(p.Position))
                 .ToList();
 
             if (hostiles == null || hostiles.Count == 0) { sb.AppendLine("None currently."); sb.AppendLine(); return; }
@@ -280,17 +282,19 @@ namespace Firefly
 
         private static string DetermineBaseType(Map map)
         {
+            var homeArea = map.areaManager?.Home;
+            if (homeArea == null) return "Surface settlement";
+
             int mountainCells = 0;
-            int checked_      = 0;
             foreach (var cell in map.AllCells)
             {
+                if (!homeArea[cell]) continue;
                 var roof = map.roofGrid?.RoofAt(cell);
                 if (roof == RoofDefOf.RoofRockThick || roof == RoofDefOf.RoofRockThin)
                 {
                     mountainCells++;
                     if (mountainCells >= 100) return "Mountain fortress";
                 }
-                if (++checked_ >= 5000) break;
             }
             return mountainCells >= 20 ? "Mountain base" : "Surface settlement";
         }
@@ -320,10 +324,13 @@ namespace Firefly
             var allRooms = map.regionGrid?.AllRooms;
             if (allRooms == null) return;
 
+            var homeArea = map.areaManager?.Home;
             var counts = new Dictionary<string, int>();
             foreach (var room in allRooms)
             {
-                string role = room?.Role?.label;
+                if (room == null) continue;
+                if (homeArea != null && !room.Cells.Any(c => homeArea[c])) continue;
+                string role = room.Role?.label;
                 if (role.NullOrEmpty() || role == "none" || role == "outdoors") continue;
                 counts[role] = counts.TryGetValue(role, out int c) ? c + 1 : 1;
             }
@@ -364,15 +371,15 @@ namespace Firefly
 
         // ── Research ────────────────────────────────────────────────────────────
 
-        private static readonly AccessTools.FieldRef<ResearchManager, ResearchProjectDef> _currentProjRef =
-            AccessTools.FieldRefAccess<ResearchManager, ResearchProjectDef>("currentProj");
+        private static readonly FieldInfo _currentProjField =
+            AccessTools.Field(typeof(ResearchManager), "currentProj");
 
         private static void AppendResearch(StringBuilder sb)
         {
             sb.AppendLine("=== RESEARCH ===");
             ResearchManager rm = Find.ResearchManager;
             ResearchProjectDef proj = null;
-            try { proj = rm != null ? _currentProjRef(rm) : null; } catch { }
+            try { proj = _currentProjField?.GetValue(rm) as ResearchProjectDef; } catch { }
 
             if (proj == null)
                 sb.AppendLine("No research in progress.");
@@ -398,7 +405,7 @@ namespace Firefly
                 if (written >= 10) break;
                 try
                 {
-                    string text = entry?.ToGameStringFromPOV(null);
+                    string text = EntryToString(entry);
                     if (text.NullOrEmpty()) continue;
                     sb.AppendLine(text.CapitalizeFirst());
                     written++;
@@ -410,16 +417,30 @@ namespace Firefly
             sb.AppendLine();
         }
 
+        private static string EntryToString(LogEntry entry)
+        {
+            if (entry == null) return null;
+            if (entry is PlayLogEntry_Interaction)
+            {
+                var initiator = _interactionInitiatorField?.GetValue(entry) as Thing;
+                return initiator != null ? entry.ToGameStringFromPOV(initiator) : null;
+            }
+            return entry.ToGameStringFromPOV(null);
+        }
+
         // ── Designations ────────────────────────────────────────────────────────
 
-        private static readonly AccessTools.FieldRef<DesignationManager, List<Designation>> _desListRef =
-            AccessTools.FieldRefAccess<DesignationManager, List<Designation>>("desList");
+        private static readonly FieldInfo _interactionInitiatorField =
+            AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
+
+        private static readonly FieldInfo _desListField =
+            AccessTools.Field(typeof(DesignationManager), "desList");
 
         private static void AppendDesignations(StringBuilder sb, Map map)
         {
             sb.AppendLine("=== PLAYER DESIGNATIONS ===");
             List<Designation> designations = null;
-            try { designations = map.designationManager != null ? _desListRef(map.designationManager) : null; } catch { }
+            try { designations = _desListField?.GetValue(map.designationManager) as List<Designation>; } catch { }
 
             if (designations == null || designations.Count == 0) { sb.AppendLine("None."); sb.AppendLine(); return; }
 
