@@ -222,8 +222,7 @@ namespace Firefly
 
             var hostiles = map.mapPawns?.AllPawnsSpawned
                 ?.Where(p => p != null && !p.Dead && !p.Downed && p.HostileTo(playerFaction)
-                          && !map.fogGrid.IsFogged(p.Position)
-                          && IsActiveThreat(p))
+                          && !map.fogGrid.IsFogged(p.Position))
                 .ToList();
 
             if (hostiles == null || hostiles.Count == 0) { sb.AppendLine("None currently."); sb.AppendLine(); return; }
@@ -239,16 +238,6 @@ namespace Firefly
                 sb.AppendLine($"{kvp.Value} from {kvp.Key}");
 
             sb.AppendLine();
-        }
-
-        private static bool IsActiveThreat(Pawn p)
-        {
-            if (p.MentalStateDef != null) return true;
-            var lord = p.GetLord();
-            if (lord?.LordJob == null) return false;
-            // Settlement/outpost defenders are hostile but aren't raiding us
-            if (lord.LordJob is LordJob_DefendPoint) return false;
-            return true;
         }
 
         // ── Resources ───────────────────────────────────────────────────────────

@@ -17,15 +17,15 @@ namespace Firefly
 
     public class StorytellerComp_Fillion : StorytellerComp
     {
-        private int lastSnapshotDay = -1;
+        private int lastSnapshotHour = -1;
 
         public override IEnumerable<FiringIncident> MakeIntervalIncidents(IIncidentTarget target)
         {
             if (!(target is Map)) yield break;
 
-            int currentDay = GenDate.DaysPassed;
-            if (currentDay <= lastSnapshotDay) yield break;
-            lastSnapshotDay = currentDay;
+            int currentHour = (int)(Find.TickManager.TicksGame / GenDate.TicksPerHour);
+            if (currentHour <= lastSnapshotHour) yield break;
+            lastSnapshotHour = currentHour;
 
             Map map = Find.CurrentMap;
             if (map == null) yield break;
