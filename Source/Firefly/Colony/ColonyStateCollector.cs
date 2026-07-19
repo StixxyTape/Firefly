@@ -7,6 +7,7 @@ using HarmonyLib;
 using RimWorld;
 using UnityEngine;
 using Verse;
+using Verse.AI.Group;
 
 namespace Firefly
 {
@@ -221,7 +222,8 @@ namespace Firefly
 
             var hostiles = map.mapPawns?.AllPawnsSpawned
                 ?.Where(p => p != null && !p.Dead && !p.Downed && p.HostileTo(playerFaction)
-                          && !map.fogGrid.IsFogged(p.Position))
+                          && !map.fogGrid.IsFogged(p.Position)
+                          && IsActiveThreat(p))
                 .ToList();
 
             if (hostiles == null || hostiles.Count == 0) { sb.AppendLine("None currently."); sb.AppendLine(); return; }
@@ -237,6 +239,16 @@ namespace Firefly
                 sb.AppendLine($"{kvp.Value} from {kvp.Key}");
 
             sb.AppendLine();
+        }
+
+        private static bool IsActiveThreat(Pawn p)
+        {
+            if (p.MentalStateDef != null) return true;
+            var lord = p.GetLord();
+            if (lord?.LordJob == null) return false;
+            // Settlement/outpost defenders are hostile but aren't raiding us
+            if (lord.LordJob is LordJob_DefendPoint) return false;
+            return true;
         }
 
         // ── Resources ───────────────────────────────────────────────────────────
@@ -282,21 +294,21 @@ namespace Firefly
 
         private static string DetermineBaseType(Map map)
         {
-            var homeArea = map.areaManager?.Home;
-            if (homeArea == null) return "Surface settlement";
+            var beds = map.listerBuildings?.AllBuildingsColonistOfClass<Building_Bed>()?.ToList();
+            if (beds == null || beds.Count == 0) return "Surface settlement";
 
-            int mountainCells = 0;
-            foreach (var cell in map.AllCells)
+            int mountainBeds = 0;
+            foreach (var b in beds)
             {
-                if (!homeArea[cell]) continue;
-                var roof = map.roofGrid?.RoofAt(cell);
+                var roof = map.roofGrid?.RoofAt(b.Position);
                 if (roof == RoofDefOf.RoofRockThick || roof == RoofDefOf.RoofRockThin)
-                {
-                    mountainCells++;
-                    if (mountainCells >= 100) return "Mountain fortress";
-                }
+                    mountainBeds++;
             }
-            return mountainCells >= 20 ? "Mountain base" : "Surface settlement";
+
+            float ratio = (float)mountainBeds / beds.Count;
+            if (ratio >= 0.8f) return "Mountain fortress";
+            if (ratio >= 0.3f) return "Mountain base";
+            return "Surface settlement";
         }
 
         private static void AppendPowerSummary(StringBuilder sb, Map map)
@@ -321,15 +333,19 @@ namespace Firefly
 
         private static void AppendRoomTypes(StringBuilder sb, Map map)
         {
-            var allRooms = map.regionGrid?.AllRooms;
-            if (allRooms == null) return;
+            var buildings = map.listerBuildings?.allBuildingsColonist;
+            if (buildings == null) return;
 
-            var homeArea = map.areaManager?.Home;
-            var counts = new Dictionary<string, int>();
-            foreach (var room in allRooms)
+            var playerRooms = new HashSet<Room>();
+            foreach (var b in buildings)
             {
-                if (room == null) continue;
-                if (homeArea != null && !room.Cells.Any(c => homeArea[c])) continue;
+                var room = b.GetRoom();
+                if (room != null) playerRooms.Add(room);
+            }
+
+            var counts = new Dictionary<string, int>();
+            foreach (var room in playerRooms)
+            {
                 string role = room.Role?.label;
                 if (role.NullOrEmpty() || role == "none" || role == "outdoors") continue;
                 counts[role] = counts.TryGetValue(role, out int c) ? c + 1 : 1;
