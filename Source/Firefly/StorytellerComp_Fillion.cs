@@ -27,9 +27,9 @@ namespace Firefly
             Map map = Find.CurrentMap;
             if (map == null) yield break;
 
-            int totalHours = (int)(Find.TickManager.TicksAbs / GenDate.TicksPerHour);
-            int ledgerSlot = totalHours / 3;
-            int totalDays  = totalHours / 24;
+            int hourOfDay  = GenLocalDate.HourOfDay(map);
+            int totalDays  = GenDate.DaysPassed;
+            int ledgerSlot = totalDays * 8 + hourOfDay / 3;
 
             // Prime on first tick so we don't back-fill from hour 0
             if (lastLedgerSlot  == -1) lastLedgerSlot  = ledgerSlot;
@@ -46,7 +46,7 @@ namespace Firefly
             if (ledgerSlot > lastLedgerSlot)
             {
                 lastLedgerSlot = ledgerSlot;
-                ColonyLedger.Record(map, totalHours % 24);
+                ColonyLedger.Record(map, hourOfDay);
                 FlushLedger(map);
             }
         }
