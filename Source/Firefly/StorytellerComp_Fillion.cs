@@ -17,8 +17,7 @@ namespace Firefly
 
     public class StorytellerComp_Fillion : StorytellerComp
     {
-        private int lastLedgerSlot = -1;
-        private int lastTimelineDay = -1;
+        private int lastHourBucket = -1;
 
         public override IEnumerable<FiringIncident> MakeIntervalIncidents(IIncidentTarget target)
         {
@@ -28,27 +27,24 @@ namespace Firefly
             if (map == null) yield break;
 
             int hourOfDay  = GenLocalDate.HourOfDay(map);
-            int totalDays  = GenDate.DaysPassed;
-            int ledgerSlot = totalDays * 8 + hourOfDay / 3;
+            int hourBucket = hourOfDay / 3;
 
-            // Prime on first tick so we don't back-fill from hour 0
-            if (lastLedgerSlot  == -1) lastLedgerSlot  = ledgerSlot;
-            if (lastTimelineDay == -1) lastTimelineDay  = totalDays;
-
-            // Compile and clear at day boundary, before recording the new slot
-            if (totalDays > lastTimelineDay)
+            // Prime on first tick — don't fire, just record where we are
+            if (lastHourBucket == -1)
             {
-                lastTimelineDay = totalDays;
+                lastHourBucket = hourBucket;
+                yield break;
+            }
+
+            if (hourBucket == lastHourBucket) yield break;
+
+            // Bucket went backwards → local midnight crossed → compile the day first
+            if (hourBucket < lastHourBucket)
                 WriteTimeline(map);
-            }
 
-            // Record every 3 hours and flush to disk
-            if (ledgerSlot > lastLedgerSlot)
-            {
-                lastLedgerSlot = ledgerSlot;
-                ColonyLedger.Record(map, hourOfDay);
-                FlushLedger(map);
-            }
+            lastHourBucket = hourBucket;
+            ColonyLedger.Record(map, hourOfDay);
+            FlushLedger(map);
         }
 
         private static void FlushLedger(Map map)
