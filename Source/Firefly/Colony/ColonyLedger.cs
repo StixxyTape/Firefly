@@ -13,7 +13,7 @@ namespace Firefly
     internal class LedgerEntry
     {
         public int HourOfDay;
-        public List<(string Name, string Activity, int MoodPct)> Pawns = new List<(string, string, int)>();
+        public List<(string Name, string Activity, string Location, int MoodPct)> Pawns = new List<(string, string, string, int)>();
         public List<string> Events = new List<string>();
     }
 
@@ -40,8 +40,9 @@ namespace Firefly
                 {
                     if (p == null) continue;
                     string activity = p.jobs?.curDriver?.GetReport()?.CapitalizeFirst() ?? "idle";
+                    string location = GetPawnLocation(p);
                     int mood = Mathf.RoundToInt((p.needs?.mood?.CurLevel ?? 0.5f) * 100f);
-                    entry.Pawns.Add((p.LabelShort ?? "?", activity, mood));
+                    entry.Pawns.Add((p.LabelShort ?? "?", activity, location, mood));
                 }
             }
 
@@ -78,7 +79,7 @@ namespace Firefly
 
                 if (entry.Pawns.Count > 0)
                 {
-                    var parts = entry.Pawns.Select(p => $"{p.Name} — {p.Activity} (mood {p.MoodPct}%)");
+                    var parts = entry.Pawns.Select(p => $"{p.Name} — {p.Activity} ({p.Location}, mood {p.MoodPct}%)");
                     sb.AppendLine($"  Colonists: {string.Join(", ", parts)}");
                 }
 
@@ -103,6 +104,16 @@ namespace Firefly
         {
             _entries.Clear();
             // _lastSeenEntry and _lastArchiveTick intentionally kept — continue tracking from current position
+        }
+
+        private static string GetPawnLocation(Pawn p)
+        {
+            if (!p.Spawned) return "unspawned";
+            var room = p.Position.GetRoom(p.Map);
+            if (room == null || room.IsHuge) return "outside";
+            string role = room.Role?.label;
+            if (role.NullOrEmpty() || role == "none") return "indoors";
+            return role;
         }
 
         private static List<string> GetNewArchiveEntries()
