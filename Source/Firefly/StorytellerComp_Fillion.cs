@@ -77,16 +77,39 @@ namespace Firefly
 
                 string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly");
                 Directory.CreateDirectory(dir);
-
-                if (!timeline.NullOrEmpty())
-                    File.WriteAllText(Path.Combine(dir, $"daily_summary_day{day}.txt"), timeline, Encoding.UTF8);
-
                 File.WriteAllText(Path.Combine(dir, "timeline_current.txt"), "", Encoding.UTF8);
-                Log.Message($"[Firefly] Daily summary written: Day {day}");
+
+                if (timeline.NullOrEmpty()) return;
+
+                string dayPath = Path.Combine(dir, $"daily_summary_day{day}.txt");
+
+                string systemPrompt =
+                    "You are Fillion, a storyteller observing a distant colony. " +
+                    "Summarize the colony's day in exactly 5 short, focused, narrative sentences. " +
+                    "Write in third person. Be concise, evocative, and story-driven. " +
+                    "No bullet points, no headers, no lists.";
+
+                Log.Message($"[Firefly] Sending Day {day} to LLM for summary...");
+
+                LLMClient.Send(
+                    systemPrompt,
+                    timeline,
+                    onSuccess: summary =>
+                    {
+                        try { File.WriteAllText(dayPath, summary, Encoding.UTF8); }
+                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary: {e.Message}"); }
+                        Log.Message($"[Firefly] Daily summary written: Day {day}");
+                    },
+                    onError: err =>
+                    {
+                        Log.Warning($"[Firefly] LLM summary failed ({err}) — saving raw timeline.");
+                        try { File.WriteAllText(dayPath, timeline, Encoding.UTF8); }
+                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write fallback: {e.Message}"); }
+                    });
             }
             catch (Exception e)
             {
-                Log.Warning($"[Firefly] Failed to write daily summary: {e.Message}");
+                Log.Warning($"[Firefly] Failed to process daily timeline: {e.Message}");
             }
         }
     }
