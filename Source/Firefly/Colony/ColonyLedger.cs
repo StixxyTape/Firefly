@@ -21,6 +21,7 @@ namespace Firefly
     {
         private static readonly List<LedgerEntry> _entries = new List<LedgerEntry>();
         private static LogEntry _lastSeenEntry;
+        private static int _lastArchiveTick = 0;
         private static int _recordingDay;
 
         private static readonly FieldInfo _initiatorField =
@@ -44,7 +45,10 @@ namespace Firefly
                 }
             }
 
-            entry.Events = GetNewLogEntries();
+            var archiveEvents = GetNewArchiveEntries();
+            var logEvents     = GetNewLogEntries();
+            entry.Events.AddRange(archiveEvents);
+            entry.Events.AddRange(logEvents);
             _entries.Add(entry);
         }
 
@@ -98,7 +102,27 @@ namespace Firefly
         public static void Clear()
         {
             _entries.Clear();
-            // _lastSeenEntry intentionally kept — continue tracking from current position
+            // _lastSeenEntry and _lastArchiveTick intentionally kept — continue tracking from current position
+        }
+
+        private static List<string> GetNewArchiveEntries()
+        {
+            var archive = Find.Archive;
+            if (archive == null) return new List<string>();
+
+            int currentTick = Find.TickManager.TicksGame;
+            var result = new List<string>();
+
+            foreach (var item in archive.ArchivablesListForReading
+                .Where(i => i.CreatedTicksGame > _lastArchiveTick)
+                .OrderBy(i => i.CreatedTicksGame))
+            {
+                string label = item.ArchivedLabel;
+                if (!label.NullOrEmpty()) result.Add($"[Event] {label}");
+            }
+
+            _lastArchiveTick = currentTick;
+            return result;
         }
 
         private static List<string> GetNewLogEntries()
