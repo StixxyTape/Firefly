@@ -66,7 +66,7 @@ namespace Firefly
 
             try
             {
-                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
+                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) })
                 {
                     var url = settings.BaseUrl.TrimEnd('/') + "/chat/completions";
 
