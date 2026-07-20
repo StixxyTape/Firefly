@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using RimWorld;
 using UnityEngine;
@@ -23,6 +24,7 @@ namespace Firefly
         private static LogEntry _lastSeenEntry;
         private static int _lastArchiveTick = 0;
         private static int _recordingDay;
+        private static bool _initialized = false;
         public static int RecordingDay => _recordingDay;
 
         private static readonly FieldInfo _initiatorField =
@@ -30,6 +32,15 @@ namespace Firefly
 
         public static void Record(Map map, int hourOfDay)
         {
+            if (!_initialized)
+            {
+                _initialized = true;
+                var all = Find.PlayLog?.AllEntries;
+                if (all != null && all.Count > 0) _lastSeenEntry = all[0];
+                _lastArchiveTick = Find.TickManager.TicksGame;
+                Log.Message("[Firefly] Ledger initialized — skipping historical events.");
+            }
+
             _recordingDay = GenDate.DaysPassed;
 
             var entry = new LedgerEntry { HourOfDay = hourOfDay };
@@ -108,6 +119,9 @@ namespace Firefly
             // _lastSeenEntry and _lastArchiveTick intentionally kept — continue tracking from current position
         }
 
+        private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
+        private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
+
         private static string GetPawnLocation(Pawn p)
         {
             if (!p.Spawned) return "unspawned";
@@ -130,7 +144,7 @@ namespace Firefly
                 .Where(i => i.CreatedTicksGame > _lastArchiveTick)
                 .OrderBy(i => i.CreatedTicksGame))
             {
-                string label = item.ArchivedLabel;
+                string label = StripTags(item.ArchivedLabel);
                 if (!label.NullOrEmpty()) result.Add($"[Event] {label}");
             }
 
@@ -149,7 +163,7 @@ namespace Firefly
                 if (entry == _lastSeenEntry) break;
                 try
                 {
-                    string text = EntryToString(entry);
+                    string text = StripTags(EntryToString(entry));
                     if (!text.NullOrEmpty()) result.Add(text.CapitalizeFirst());
                 }
                 catch { }
