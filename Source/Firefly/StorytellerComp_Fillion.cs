@@ -81,7 +81,10 @@ namespace Firefly
 
                 if (timeline.NullOrEmpty()) return;
 
-                string dayPath = Path.Combine(dir, $"daily_summary_day{day}.txt");
+                // Always save the raw timeline
+                File.WriteAllText(Path.Combine(dir, $"daily_timeline_day{day}.txt"), timeline, Encoding.UTF8);
+
+                string summaryPath = Path.Combine(dir, $"daily_summary_day{day}.txt");
 
                 string systemPrompt =
                     "You are Fillion, a storyteller observing a distant colony. " +
@@ -96,15 +99,13 @@ namespace Firefly
                     timeline,
                     onSuccess: summary =>
                     {
-                        try { File.WriteAllText(dayPath, summary, Encoding.UTF8); }
+                        try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
                         catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary: {e.Message}"); }
                         Log.Message($"[Firefly] Daily summary written: Day {day}");
                     },
                     onError: err =>
                     {
-                        Log.Warning($"[Firefly] LLM summary failed ({err}) — saving raw timeline.");
-                        try { File.WriteAllText(dayPath, timeline, Encoding.UTF8); }
-                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write fallback: {e.Message}"); }
+                        Log.Warning($"[Firefly] LLM summary failed: {err}");
                     });
             }
             catch (Exception e)
