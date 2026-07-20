@@ -31,6 +31,10 @@ namespace Firefly
             int ledgerSlot = totalHours / 3;
             int totalDays  = totalHours / 24;
 
+            // Prime on first tick so we don't back-fill from hour 0
+            if (lastLedgerSlot  == -1) lastLedgerSlot  = ledgerSlot;
+            if (lastTimelineDay == -1) lastTimelineDay  = totalDays;
+
             // Compile and clear at day boundary, before recording the new slot
             if (totalDays > lastTimelineDay)
             {
