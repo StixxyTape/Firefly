@@ -55,7 +55,7 @@ namespace Firefly
                 if (content.NullOrEmpty()) return;
                 string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly");
                 Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, "timeline_latest.txt"), content, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(dir, "timeline_current.txt"), content, Encoding.UTF8);
             }
             catch (Exception e)
             {
@@ -68,17 +68,21 @@ namespace Firefly
             try
             {
                 string timeline = ColonyLedger.Compile(map);
+                int day = ColonyLedger.RecordingDay;
                 ColonyLedger.Clear();
-                if (timeline.NullOrEmpty()) return;
 
                 string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly");
                 Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, "timeline_latest.txt"), timeline, Encoding.UTF8);
-                Log.Message($"[Firefly] Timeline written: Day {GenDate.DaysPassed}");
+
+                if (!timeline.NullOrEmpty())
+                    File.WriteAllText(Path.Combine(dir, $"daily_summary_day{day}.txt"), timeline, Encoding.UTF8);
+
+                File.WriteAllText(Path.Combine(dir, "timeline_current.txt"), "", Encoding.UTF8);
+                Log.Message($"[Firefly] Daily summary written: Day {day}");
             }
             catch (Exception e)
             {
-                Log.Warning($"[Firefly] Failed to write timeline: {e.Message}");
+                Log.Warning($"[Firefly] Failed to write daily summary: {e.Message}");
             }
         }
     }

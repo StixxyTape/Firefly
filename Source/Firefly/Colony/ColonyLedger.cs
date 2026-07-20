@@ -23,6 +23,7 @@ namespace Firefly
         private static LogEntry _lastSeenEntry;
         private static int _lastArchiveTick = 0;
         private static int _recordingDay;
+        public static int RecordingDay => _recordingDay;
 
         private static readonly FieldInfo _initiatorField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
