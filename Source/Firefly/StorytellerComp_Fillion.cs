@@ -38,11 +38,28 @@ namespace Firefly
                 WriteTimeline(map);
             }
 
-            // Record every 3 hours
+            // Record every 3 hours and flush to disk
             if (ledgerSlot > lastLedgerSlot)
             {
                 lastLedgerSlot = ledgerSlot;
                 ColonyLedger.Record(map, totalHours % 24);
+                FlushLedger(map);
+            }
+        }
+
+        private static void FlushLedger(Map map)
+        {
+            try
+            {
+                string content = ColonyLedger.Compile(map);
+                if (content.NullOrEmpty()) return;
+                string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly");
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "timeline_latest.txt"), content, Encoding.UTF8);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Failed to flush ledger: {e.Message}");
             }
         }
 

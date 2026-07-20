@@ -51,6 +51,7 @@ namespace Firefly
             entry.Events.AddRange(archiveEvents);
             entry.Events.AddRange(logEvents);
             _entries.Add(entry);
+            Log.Message($"[Firefly] Ledger recorded: Hour {hourOfDay:D2}:00, Day {_recordingDay}");
         }
 
         public static string Compile(Map map)
