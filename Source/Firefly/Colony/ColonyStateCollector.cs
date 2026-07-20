@@ -336,7 +336,8 @@ namespace Firefly
             foreach (var room in playerRooms)
             {
                 string role = room.Role?.label;
-                if (role.NullOrEmpty() || role == "none" || role == "outdoors") continue;
+                if (role.NullOrEmpty() || role == "outdoors") continue;
+                if (role == "none") role = "empty room";
                 counts[role] = counts.TryGetValue(role, out int c) ? c + 1 : 1;
             }
 

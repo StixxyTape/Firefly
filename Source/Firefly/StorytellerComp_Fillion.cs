@@ -17,38 +17,51 @@ namespace Firefly
 
     public class StorytellerComp_Fillion : StorytellerComp
     {
-        private int lastSnapshotHour = -1;
+        private int lastLedgerSlot = -1;
+        private int lastTimelineDay = -1;
 
         public override IEnumerable<FiringIncident> MakeIntervalIncidents(IIncidentTarget target)
         {
             if (!(target is Map)) yield break;
 
-            int currentHour = (int)(Find.TickManager.TicksGame / GenDate.TicksPerHour);
-            if (currentHour <= lastSnapshotHour) yield break;
-            lastSnapshotHour = currentHour;
-
             Map map = Find.CurrentMap;
             if (map == null) yield break;
 
-            WriteSnapshot(map);
+            int totalHours = (int)(Find.TickManager.TicksGame / GenDate.TicksPerHour);
+            int ledgerSlot = totalHours / 3;
+            int totalDays  = totalHours / 24;
+
+            // Compile and clear at day boundary, before recording the new slot
+            if (totalDays > lastTimelineDay)
+            {
+                lastTimelineDay = totalDays;
+                WriteTimeline(map);
+            }
+
+            // Record every 3 hours
+            if (ledgerSlot > lastLedgerSlot)
+            {
+                lastLedgerSlot = ledgerSlot;
+                ColonyLedger.Record(map, totalHours % 24);
+            }
         }
 
-        private static void WriteSnapshot(Map map)
+        private static void WriteTimeline(Map map)
         {
             try
             {
-                string snapshot = ColonyStateCollector.GetSnapshot(map);
-                if (snapshot == null) return;
+                string timeline = ColonyLedger.Compile(map);
+                ColonyLedger.Clear();
+                if (timeline.NullOrEmpty()) return;
 
                 string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly");
                 Directory.CreateDirectory(dir);
-
-                File.WriteAllText(Path.Combine(dir, "snapshot_latest.txt"), snapshot, Encoding.UTF8);
-                Log.Message($"[Firefly] Snapshot written: Day {GenDate.DaysPassed}");
+                File.WriteAllText(Path.Combine(dir, "timeline_latest.txt"), timeline, Encoding.UTF8);
+                Log.Message($"[Firefly] Timeline written: Day {GenDate.DaysPassed}");
             }
             catch (Exception e)
             {
-                Log.Warning($"[Firefly] Failed to write snapshot: {e.Message}");
+                Log.Warning($"[Firefly] Failed to write timeline: {e.Message}");
             }
         }
     }
