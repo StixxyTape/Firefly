@@ -27,7 +27,7 @@ namespace Firefly
             Map map = Find.CurrentMap;
             if (map == null) yield break;
 
-            int totalHours = (int)(Find.TickManager.TicksGame / GenDate.TicksPerHour);
+            int totalHours = (int)(Find.TickManager.TicksAbs / GenDate.TicksPerHour);
             int ledgerSlot = totalHours / 3;
             int totalDays  = totalHours / 24;
 
