@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -11,21 +12,113 @@ using Verse;
 
 namespace Firefly
 {
-    internal class LedgerEntry
+    internal struct CombatEvent
     {
-        public int HourOfDay;
-        public List<(string Name, string Activity, string Location, int MoodPct)> Pawns = new List<(string, string, string, int)>();
-        public List<string> Events = new List<string>();
+        public string Initiator;
+        public string InitiatorId;         // ThingID — for identity-based grouping
+        public string Target;
+        public string TargetId;            // ThingID — distinguishes same-named animals
+        public bool   ReachedTarget;       // bullet/blow reached the intended target
+        public bool   Deflected;           // resolved at drain time from Entry
+        public bool   DidDamage;           // resolved at drain time from Entry
+        public string CoverHit;            // thing physically struck when missing (null = clean miss)
+        public string Weapon;              // weapon label (null = unarmed)
+        public bool   InitiatorIsColonist; // used to normalise fight pair (colonist first)
+        public string BattleId;            // Battle.GetUniqueLoadID() — for new-fight detection
+        public long   Tick;                // TicksAbs at capture time — used to timestamp the combat-started event
+        public LogEntry_DamageResult Entry; // kept alive until DrainCombatEvents resolves damage fields
+    }
+
+    internal struct HazardEvent
+    {
+        public string Victim;
+        public string HazardLabel;         // human-readable label derived from ruleDef.defName
+        public long   Tick;                // TicksAbs at capture time — used to timestamp the hazard-started event
+        public bool   DidDamage;           // resolved at drain time from Entry
+        public LogEntry_DamageResult Entry;
     }
 
     internal static class ColonyLedger
     {
-        private static readonly List<LedgerEntry> _entries = new List<LedgerEntry>();
-        private static LogEntry _lastSeenEntry;
-        private static int _lastArchiveTick = 0;
+        private static readonly List<(long Tick, string Text)> _timeline        = new List<(long, string)>();
+        private static readonly List<(long Tick, string Text)>  _combatSummaries = new List<(long, string)>();
+        private static readonly List<(long Tick, string Text)>  _hazardSummaries = new List<(long, string)>();
         private static int _recordingDay;
         private static bool _initialized = false;
         public static int RecordingDay => _recordingDay;
+
+        // Battle IDs we've already emitted a [Combat started] event for — never cleared (IDs are unique per session)
+        private static readonly HashSet<string> _announcedBattles = new HashSet<string>();
+        // (victim, hazardLabel) pairs we've announced this day — cleared at midnight so new fires re-announce
+        private static readonly HashSet<(string, string)> _announcedHazards = new HashSet<(string, string)>();
+
+        // Persisted comparisons — loaded from disk at start, saved at midnight
+        private static Dictionary<string, PawnHealthSnapshot> _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
+        private static Dictionary<string, string> _prevDayRelations  = new Dictionary<string, string>();
+        private static Dictionary<string, string> _prevDaySkills     = new Dictionary<string, string>();
+        private static bool _prevComparisonsLoaded = false;
+
+        // Combat events buffered until next drain (damage fields filled synchronously within the same tick)
+        private static readonly List<CombatEvent> _capturedBattleEvents = new List<CombatEvent>();
+        private static readonly List<HazardEvent> _capturedHazardEvents = new List<HazardEvent>();
+        // Structured downed/killed outcomes — drained alongside combat events for simple summaries
+        private static readonly List<(string Subject, string Outcome, string Initiator, string Cause)> _capturedOutcomes
+            = new List<(string, string, string, string)>();
+
+        public static void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry)
+        {
+            if (!_initialized) return;
+            var ev = new CombatEvent
+            {
+                Initiator            = initiator   ?? "?",
+                InitiatorId          = initiatorId ?? initiator ?? "?",
+                Target               = target      ?? "?",
+                TargetId             = targetId    ?? target    ?? "?",
+                ReachedTarget        = reachedTarget,
+                Weapon               = weapon,
+                CoverHit             = coverHit,
+                InitiatorIsColonist  = initiatorIsColonist,
+                BattleId             = battleId    ?? "",
+                Tick                 = Find.TickManager.TicksAbs,
+                Entry                = entry
+            };
+            lock (_capturedBattleEvents) _capturedBattleEvents.Add(ev);
+        }
+
+        public static void CaptureStateChange(string targetName, string text)
+        {
+            if (!_initialized || targetName.NullOrEmpty()) return;
+            long tick = Find.TickManager.TicksAbs;
+            lock (_timeline) _timeline.Add((tick, text + "."));
+        }
+
+        public static void CaptureOutcome(string subject, string outcome, string initiator, string cause)
+        {
+            if (!_initialized || subject.NullOrEmpty()) return;
+            lock (_capturedOutcomes) _capturedOutcomes.Add((subject, outcome ?? "", initiator ?? "", cause ?? ""));
+        }
+
+        public static void CaptureMessage(string text)
+        {
+            if (!_initialized || text.NullOrEmpty()) return;
+            long tick = Find.TickManager.TicksAbs;
+            lock (_timeline) _timeline.Add((tick, StripTags(text)));
+        }
+
+        public static void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry)
+        {
+            if (!_initialized) return;
+            var ev = new HazardEvent { Victim = victim ?? "?", HazardLabel = hazardLabel ?? "unknown hazard", Tick = Find.TickManager.TicksAbs, Entry = entry };
+            lock (_capturedHazardEvents) _capturedHazardEvents.Add(ev);
+        }
+
+        // Caller provides the fully-formatted string including prefix
+        public static void CaptureDecision(string formattedText)
+        {
+            if (!_initialized || formattedText.NullOrEmpty()) return;
+            long tick = Find.TickManager.TicksAbs;
+            lock (_timeline) _timeline.Add((tick, StripTags(formattedText)));
+        }
 
         private static readonly FieldInfo _initiatorField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
@@ -35,15 +128,20 @@ namespace Firefly
             if (!_initialized)
             {
                 _initialized = true;
-                var all = Find.PlayLog?.AllEntries;
-                if (all != null && all.Count > 0) _lastSeenEntry = all[0];
-                _lastArchiveTick = Find.TickManager.TicksGame;
+                lock (_capturedBattleEvents) _capturedBattleEvents.Clear();
+                lock (_capturedHazardEvents) _capturedHazardEvents.Clear();
+                lock (_capturedOutcomes)     _capturedOutcomes.Clear();
                 Log.Message("[Firefly] Ledger initialized — skipping historical events.");
             }
 
             _recordingDay = GenDate.DaysPassed;
 
-            var entry = new LedgerEntry { HourOfDay = hourOfDay };
+            long snapshotTick = Find.TickManager.TicksAbs;
+            float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
+
+            // Weather and colonist snapshots become timestamped events in the flat timeline
+            string weather = map.weatherManager?.curWeather?.LabelCap ?? "Unknown";
+            _timeline.Add((snapshotTick, $"Weather — {weather}"));
 
             var colonists = map.mapPawns?.FreeColonists?.ToList();
             if (colonists != null)
@@ -52,17 +150,28 @@ namespace Firefly
                 {
                     if (p == null) continue;
                     string activity = p.jobs?.curDriver?.GetReport()?.CapitalizeFirst() ?? "idle";
+                    var carried = p.carryTracker?.CarriedThing;
+                    if (carried != null)
+                        activity += $" (carrying {StripTags(carried.Label)})";
                     string location = GetPawnLocation(p);
                     int mood = Mathf.RoundToInt((p.needs?.mood?.CurLevel ?? 0.5f) * 100f);
-                    entry.Pawns.Add((p.LabelShort ?? "?", activity, location, mood));
+                    _timeline.Add((snapshotTick, $"{p.LabelShort ?? "?"} — {activity} ({location}, mood {mood}%)"));
                 }
             }
 
-            var archiveEvents = GetNewArchiveEntries();
-            var logEvents     = GetNewLogEntries();
-            entry.Events.AddRange(archiveEvents);
-            entry.Events.AddRange(logEvents);
-            _entries.Add(entry);
+            var (combatSimple, _, combatStarts) = DrainCombatEvents();
+            var (hazardSummaries, hazardStarts) = DrainHazardEvents();
+
+            _combatSummaries.AddRange(combatSimple);
+            _hazardSummaries.AddRange(hazardSummaries);
+
+            // Combat and hazard start events go straight into the timeline
+            lock (_timeline)
+            {
+                _timeline.AddRange(combatStarts);
+                _timeline.AddRange(hazardStarts);
+            }
+
             Log.Message($"[Firefly] Ledger recorded: Hour {hourOfDay:D2}:00, Day {_recordingDay}");
         }
 
@@ -80,101 +189,993 @@ namespace Firefly
             sb.AppendLine($"{season}, Year {year}");
             sb.AppendLine();
 
-            if (_entries.Count == 0)
+            if (_timeline.Count == 0 && _combatSummaries.Count == 0 && _hazardSummaries.Count == 0)
             {
                 sb.AppendLine("(no data recorded this day)");
                 return sb.ToString();
             }
 
-            foreach (var entry in _entries)
+            // Flat chronological timeline
+            sb.AppendLine("=== TIMELINE ===");
+            var sorted = _timeline.OrderBy(e => e.Tick).ToList();
+            foreach (var (tick, text) in sorted)
             {
-                sb.AppendLine($"[Hour {entry.HourOfDay:D2}:00]");
+                int hr  = GenDate.HourInteger(tick, lon);
+                int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                string flat = text.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace("  ", " ").Trim();
+                sb.AppendLine($"  - [{hr:D2}:{min:D2}] {flat}");
+            }
+            sb.AppendLine();
 
-                if (entry.Pawns.Count > 0)
+            if (_combatSummaries.Count > 0)
+            {
+                sb.AppendLine("=== COMBAT ===");
+                foreach (var (tick, text) in _combatSummaries.OrderBy(c => c.Tick))
                 {
-                    var parts = entry.Pawns.Select(p => $"{p.Name} — {p.Activity} ({p.Location}, mood {p.MoodPct}%)");
-                    sb.AppendLine($"  Colonists: {string.Join(", ", parts)}");
+                    int hr  = GenDate.HourInteger(tick, lon);
+                    int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                    sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
                 }
+                sb.AppendLine();
+            }
 
-                if (entry.Events.Count > 0)
+            if (_hazardSummaries.Count > 0)
+            {
+                sb.AppendLine("=== HAZARDS ===");
+                foreach (var (tick, text) in _hazardSummaries.OrderBy(h => h.Tick))
                 {
-                    sb.AppendLine("  Events:");
-                    foreach (var evt in entry.Events)
-                        sb.AppendLine($"    - {evt}");
+                    int hr  = GenDate.HourInteger(tick, lon);
+                    int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                    sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
                 }
-                else
-                {
-                    sb.AppendLine("  Events: (none)");
-                }
-
                 sb.AppendLine();
             }
 
             return sb.ToString();
         }
 
+        // Called at midnight before sending to LLM — captures health + relations once per day
+        public static string BuildComparisonSection(Map map)
+        {
+            var colonists = map.mapPawns?.FreeColonists?.ToList();
+            if (colonists == null || colonists.Count == 0) return "";
+
+            var sb = new StringBuilder();
+
+            // --- Health ---
+            var currentHealth = new Dictionary<string, PawnHealthSnapshot>();
+            sb.AppendLine("=== COLONIST HEALTH ===");
+            foreach (var p in colonists)
+            {
+                if (p == null) continue;
+                string name = p.LabelShort ?? "?";
+                var snap = TakePawnHealthSnapshot(p);
+                currentHealth[name] = snap;
+                _prevDayHealth.TryGetValue(name, out PawnHealthSnapshot prev);
+
+                // Overall line: health % + optional delta + optional bleeding
+                string overallLine = $"Overall: {snap.HealthPct}%";
+                if (prev != null && prev.HealthPct != snap.HealthPct)
+                {
+                    int hDelta = snap.HealthPct - prev.HealthPct;
+                    overallLine += $" ({(hDelta < 0 ? "decreased" : "increased")} by {Math.Abs(hDelta)}% today)";
+                }
+                if (snap.BleedRatePct > 0 && snap.HoursUntilDeath > 0f)
+                    overallLine += $" — {snap.HoursUntilDeath:F1}h until death";
+
+                if (p.Dead)
+                    overallLine += " — Dead";
+                else if (p.Downed)
+                    overallLine += " — Downed";
+                else if (p.InMentalState)
+                    overallLine += $" — Mental break ({p.MentalStateDef?.label ?? "unknown"})";
+
+                string conditions = RenderHealthConditions(snap, prev);
+                if (conditions.NullOrEmpty() && snap.BleedRatePct == 0 && snap.HoursUntilDeath == 0f)
+                    overallLine += " — Healthy";
+
+                sb.AppendLine($"  {name} health overview:");
+                sb.AppendLine($"    - {overallLine}");
+                if (!conditions.NullOrEmpty())
+                    sb.AppendLine($"    - {conditions}");
+            }
+            _prevDayHealth = currentHealth;
+
+            // --- Relations ---
+            var currentRelations = GetRelationSnapshot(map, colonists);
+            string relationChanges = BuildRelationChanges(currentRelations);
+            if (!relationChanges.NullOrEmpty())
+            {
+                sb.AppendLine();
+                sb.Append(relationChanges);
+            }
+            _prevDayRelations = currentRelations;
+
+            // --- Skills ---
+            var currentSkills = GetSkillSnapshot(colonists);
+            string skillChanges = BuildSkillChanges(currentSkills);
+            if (!skillChanges.NullOrEmpty())
+            {
+                sb.AppendLine();
+                sb.Append(skillChanges);
+            }
+            _prevDaySkills = currentSkills;
+
+            return sb.ToString();
+        }
+
+        // Snapshot format: "DirectRel1,DirectRel2|TotalOpinion|ThoughtLabel1:val1;ThoughtLabel2:val2"
+        private static Dictionary<string, string> GetRelationSnapshot(Map map, List<Pawn> colonists)
+        {
+            var snapshot = new Dictionary<string, string>();
+            foreach (var pawnA in colonists)
+            {
+                if (pawnA == null) continue;
+                string nameA = pawnA.LabelShort ?? "?";
+
+                // Collect every pawn this colonist has any tracked link with
+                var related = new HashSet<Pawn>();
+                if (pawnA.relations?.DirectRelations != null)
+                    foreach (var rel in pawnA.relations.DirectRelations)
+                        if (rel.otherPawn != null) related.Add(rel.otherPawn);
+
+                var socialMems = pawnA.needs?.mood?.thoughts?.memories?.Memories
+                    ?.OfType<Thought_MemorySocial>()
+                    .Where(t => t.otherPawn != null)
+                    .ToList();
+                if (socialMems != null)
+                    foreach (var t in socialMems) related.Add(t.otherPawn);
+
+                foreach (var pawnB in related)
+                {
+                    if (pawnB == null) continue;
+                    string nameB = pawnB.LabelShort ?? "?";
+                    try
+                    {
+                        var directRels = pawnA.relations?.DirectRelations
+                            ?.Where(r => r.otherPawn == pawnB)
+                            .Select(r => r.def?.label ?? "?")
+                            .ToList() ?? new List<string>();
+
+                        int opinion = pawnA.relations?.OpinionOf(pawnB) ?? 0;
+
+                        // Individual opinion-affecting memories about pawnB
+                        var thoughts = pawnA.needs?.mood?.thoughts?.memories?.Memories
+                            ?.OfType<Thought_MemorySocial>()
+                            .Where(t => t.otherPawn == pawnB && t.OpinionOffset() != 0f)
+                            .Select(t => $"{t.LabelCap}:{Mathf.RoundToInt(t.OpinionOffset()):+#;-#;0}")
+                            .ToList() ?? new List<string>();
+
+                        string relStr     = string.Join(",", directRels);
+                        string thoughtStr = string.Join(";", thoughts);
+                        snapshot[$"{nameA}->{nameB}"] = $"{relStr}|{opinion}|{thoughtStr}";
+                    }
+                    catch { }
+                }
+            }
+            return snapshot;
+        }
+
+        private static string BuildRelationChanges(Dictionary<string, string> current)
+        {
+            if (_prevDayRelations.Count == 0) return "";
+
+            var byPawn = new Dictionary<string, List<string>>();
+
+            // Check all current pairs for changes vs yesterday
+            foreach (var kvp in current)
+            {
+                string key = kvp.Key;
+                int arrow = key.IndexOf("->");
+                if (arrow < 0) continue;
+                string nameA = key.Substring(0, arrow);
+                string nameB = key.Substring(arrow + 2);
+
+                _prevDayRelations.TryGetValue(key, out string prevValue);
+                // prevValue null = this is a new relationship entirely
+
+                ParseRelEntry(kvp.Value, out string curRels, out int curOpinion, out string curThoughts);
+                ParseRelEntry(prevValue ?? "||", out string prevRels, out int prevOpinion, out string prevThoughts);
+
+                var changes = new List<string>();
+
+                // Named relation changes
+                var curRelList  = curRels.Split(',').Where(r => !r.NullOrEmpty()).ToList();
+                var prevRelList = prevRels.Split(',').Where(r => !r.NullOrEmpty()).ToList();
+                foreach (var r in curRelList.Except(prevRelList))  changes.Add($"new relation with {nameB}: {r}");
+                foreach (var r in prevRelList.Except(curRelList))  changes.Add($"lost relation with {nameB}: {r}");
+
+                // Opinion total change (threshold 10)
+                int delta = curOpinion - prevOpinion;
+                if (Math.Abs(delta) >= 10)
+                {
+                    string dir = delta > 0 ? "improved" : "worsened";
+                    changes.Add($"opinion of {nameB} {dir}: {prevOpinion:+#;-#;0} → {curOpinion:+#;-#;0}");
+                }
+
+                // Individual thought changes
+                var curThoughtSet  = new HashSet<string>(curThoughts.Split(';').Where(t => !t.NullOrEmpty()));
+                var prevThoughtSet = new HashSet<string>(prevThoughts.Split(';').Where(t => !t.NullOrEmpty()));
+                foreach (var t in curThoughtSet.Except(prevThoughtSet))  changes.Add($"new memory about {nameB}: {t}");
+                foreach (var t in prevThoughtSet.Except(curThoughtSet))  changes.Add($"memory about {nameB} expired: {t}");
+
+                if (changes.Any())
+                {
+                    if (!byPawn.ContainsKey(nameA)) byPawn[nameA] = new List<string>();
+                    byPawn[nameA].AddRange(changes);
+                }
+            }
+
+            // Relationships that existed yesterday but are entirely gone today
+            foreach (var kvp in _prevDayRelations)
+            {
+                if (current.ContainsKey(kvp.Key)) continue;
+                int arrow = kvp.Key.IndexOf("->");
+                if (arrow < 0) continue;
+                string nameA = kvp.Key.Substring(0, arrow);
+                string nameB = kvp.Key.Substring(arrow + 2);
+                ParseRelEntry(kvp.Value, out string prevRels, out _, out _);
+                var prevRelList = prevRels.Split(',').Where(r => !r.NullOrEmpty()).ToList();
+                foreach (var r in prevRelList)
+                {
+                    if (!byPawn.ContainsKey(nameA)) byPawn[nameA] = new List<string>();
+                    byPawn[nameA].Add($"lost relation with {nameB}: {r}");
+                }
+            }
+
+            if (!byPawn.Any()) return "";
+
+            var sb = new StringBuilder();
+            sb.AppendLine("=== RELATIONSHIP CHANGES ===");
+            foreach (var kvp in byPawn)
+            {
+                sb.AppendLine($"  {kvp.Key}:");
+                foreach (var change in kvp.Value)
+                    sb.AppendLine($"    {change}");
+            }
+            return sb.ToString();
+        }
+
+        private static Dictionary<string, string> GetSkillSnapshot(List<Pawn> colonists)
+        {
+            var snapshot = new Dictionary<string, string>();
+            foreach (var p in colonists)
+            {
+                if (p?.skills == null) continue;
+                string name = p.LabelShort ?? "?";
+                var parts = p.skills.skills
+                    .Where(s => !s.TotallyDisabled)
+                    .Select(s => $"{s.def.LabelCap}:{s.Level}:{s.passion}");
+                snapshot[name] = string.Join(";", parts);
+            }
+            return snapshot;
+        }
+
+        private static string BuildSkillChanges(Dictionary<string, string> current)
+        {
+            if (_prevDaySkills.Count == 0) return "";
+
+            var lines = new List<string>();
+            foreach (var kvp in current)
+            {
+                if (!_prevDaySkills.TryGetValue(kvp.Key, out string prevValue)) continue;
+
+                var curSkills  = ParseSkillSnapshot(kvp.Value);
+                var prevSkills = ParseSkillSnapshot(prevValue);
+
+                var pawnChanges = new List<string>();
+                foreach (var skill in curSkills)
+                {
+                    if (!prevSkills.TryGetValue(skill.Key, out var prev)) continue;
+                    int    curLevel   = skill.Value.Level;
+                    int    prevLevel  = prev.Level;
+                    string curPassion = skill.Value.Passion;
+                    string prevPassion = prev.Passion;
+
+                    if (curLevel != prevLevel)
+                        pawnChanges.Add($"{skill.Key} {(curLevel > prevLevel ? "levelled up" : "decreased")} {prevLevel} → {curLevel}. Went from '{SkillLevelLabel(prevLevel)}' to '{SkillLevelLabel(curLevel)}'.");
+                    if (curPassion != prevPassion)
+                        pawnChanges.Add($"{skill.Key} passion changed: {prevPassion} → {curPassion}");
+                }
+
+                if (pawnChanges.Any())
+                    lines.Add($"  {kvp.Key}: {string.Join(", ", pawnChanges)}");
+            }
+
+            if (!lines.Any()) return "";
+
+            var sb = new StringBuilder();
+            sb.AppendLine("=== SKILL CHANGES ===");
+            foreach (var line in lines) sb.AppendLine(line);
+            return sb.ToString();
+        }
+
+        private static readonly string[] _skillLabels = {
+            "Barely heard of it", "Utter beginner", "Beginner", "Basic familiarity", "Some familiarity",
+            "Significant familiarity", "Capable amateur", "Weak professional", "Employable professional",
+            "Solid professional", "Skilled professional", "Very skilled professional", "Expert",
+            "Strong expert", "Master", "Strong master", "Region-known master", "Region-leading master",
+            "Planet-known master", "Planet-leading master", "Legendary master"
+        };
+
+        private static string SkillLevelLabel(int level) =>
+            level >= 0 && level < _skillLabels.Length ? _skillLabels[level] : level.ToString();
+
+        private static Dictionary<string, (int Level, string Passion)> ParseSkillSnapshot(string value)
+        {
+            var result = new Dictionary<string, (int, string)>();
+            if (value.NullOrEmpty()) return result;
+            foreach (var entry in value.Split(';'))
+            {
+                var parts = entry.Split(':');
+                if (parts.Length < 3) continue;
+                if (!int.TryParse(parts[1], out int level)) continue;
+                result[parts[0]] = (level, parts[2]);
+            }
+            return result;
+        }
+
+        private static void ParseRelEntry(string value, out string relations, out int opinion, out string thoughts)
+        {
+            var parts = value?.Split('|') ?? new string[0];
+            relations = parts.Length > 0 ? parts[0] : "";
+            opinion   = parts.Length > 1 && int.TryParse(parts[1], out int o) ? o : 0;
+            thoughts  = parts.Length > 2 ? parts[2] : "";
+        }
+
+        public static void TryLoadPrevDayComparisons(string filePath)
+        {
+            if (_prevComparisonsLoaded) return;
+            _prevComparisonsLoaded = true;
+            try
+            {
+                if (!File.Exists(filePath)) return;
+                _prevDayHealth.Clear();
+                _prevDayRelations.Clear();
+                _prevDaySkills.Clear();
+                string section = "";
+                foreach (var line in File.ReadAllLines(filePath, Encoding.UTF8))
+                {
+                    if (line == "[health]")    { section = "health";    continue; }
+                    if (line == "[relations]") { section = "relations"; continue; }
+                    if (line == "[skills]")    { section = "skills";    continue; }
+                    int tab = line.IndexOf('\t');
+                    if (tab <= 0) continue;
+                    string key = line.Substring(0, tab);
+                    string val = line.Substring(tab + 1);
+                    switch (section)
+                    {
+                        case "health":    _prevDayHealth[key]    = PawnHealthSnapshot.Deserialize(val); break;
+                        case "relations": _prevDayRelations[key] = val; break;
+                        case "skills":    _prevDaySkills[key]    = val; break;
+                    }
+                }
+                Log.Message($"[Firefly] Loaded previous day comparisons ({_prevDayHealth.Count} health, {_prevDayRelations.Count} relation, {_prevDaySkills.Count} skill entries).");
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Failed to load prev day comparisons: {e.Message}");
+            }
+        }
+
+        public static void SavePrevDayComparisons(string filePath)
+        {
+            try
+            {
+                var lines = new List<string> { "[health]" };
+                lines.AddRange(_prevDayHealth.Select(kvp => $"{kvp.Key}\t{kvp.Value.Serialize()}"));
+                lines.Add("[relations]");
+                lines.AddRange(_prevDayRelations.Select(kvp => $"{kvp.Key}\t{kvp.Value}"));
+                lines.Add("[skills]");
+                lines.AddRange(_prevDaySkills.Select(kvp => $"{kvp.Key}\t{kvp.Value}"));
+                File.WriteAllLines(filePath, lines, Encoding.UTF8);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Failed to save prev day comparisons: {e.Message}");
+            }
+        }
+
         public static void Clear()
         {
-            _entries.Clear();
-            // _lastSeenEntry and _lastArchiveTick intentionally kept — continue tracking from current position
+            _timeline.Clear();
+            _combatSummaries.Clear();
+            _hazardSummaries.Clear();
+            _announcedHazards.Clear();
+            lock (_capturedOutcomes) _capturedOutcomes.Clear(); // fire can start again next day — re-announce it
+            // _announcedBattles intentionally kept — battle IDs are unique per session, so a
+            // genuine new fight always gets a new ID; no need to re-announce across day boundaries
         }
 
         private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
         private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
 
+        private static (List<(long Tick, string Text)> Summaries, List<(long Tick, string Text)> Starts) DrainHazardEvents()
+        {
+            List<HazardEvent> events;
+            lock (_capturedHazardEvents)
+            {
+                events = new List<HazardEvent>(_capturedHazardEvents);
+                _capturedHazardEvents.Clear();
+            }
+            if (events.Count == 0) return (new List<(long, string)>(), new List<(long, string)>());
+
+            for (int i = 0; i < events.Count; i++)
+            {
+                var e = events[i];
+                if (e.Entry != null)
+                {
+                    try
+                    {
+                        var parts = Traverse.Create(e.Entry).Field("damagedParts").GetValue<List<BodyPartRecord>>();
+                        e.DidDamage = parts != null && parts.Count > 0;
+                        events[i] = e;
+                    }
+                    catch { }
+                }
+            }
+
+            var summaries = new List<(long Tick, string Text)>();
+            var starts    = new List<(long Tick, string Text)>();
+
+            foreach (var group in events.GroupBy(e => (e.Victim, e.HazardLabel)).OrderBy(g => g.Key.Victim))
+            {
+                string victim    = group.Key.Victim;
+                string label     = group.Key.HazardLabel;
+                long   firstTick = group.Min(e => e.Tick);
+
+                var key = (victim, label);
+                if (_announcedHazards.Add(key))
+                    starts.Add((firstTick, $"[{victim} started taking damage from {label}]"));
+
+                int total       = group.Count();
+                int damageCount = group.Count(e => e.DidDamage);
+                string verb     = HazardVerb(label);
+                string line     = $"{victim} was {verb} {total} time{(total == 1 ? "" : "s")}";
+                if (damageCount > 0 && damageCount < total)
+                    line += $" ({damageCount} did damage)";
+                summaries.Add((firstTick, line + "."));
+            }
+            return (summaries, starts);
+        }
+
+        private static string HazardVerb(string label)
+        {
+            switch (label)
+            {
+                case "fire":               return "burned by fire";
+                case "ceiling":            return "crushed by collapsing roof";
+                case "trap spike":         return "hit by a spike trap";
+                case "tornado":            return "struck by a tornado";
+                case "power beam":         return "hit by a power beam";
+                case "unnatural darkness": return "harmed by unnatural darkness";
+                default:                   return $"damaged by {label}";
+            }
+        }
+
+        private static (List<(long Tick, string Text)> Simple, List<string> Detailed, List<(long Tick, string Text)> Starts) DrainCombatEvents()
+        {
+            List<CombatEvent> shots;
+            lock (_capturedBattleEvents)
+            {
+                shots = new List<CombatEvent>(_capturedBattleEvents);
+                _capturedBattleEvents.Clear();
+            }
+
+            List<(string Subject, string Outcome, string Initiator, string Cause)> outcomes;
+            lock (_capturedOutcomes)
+            {
+                outcomes = new List<(string, string, string, string)>(_capturedOutcomes);
+                _capturedOutcomes.Clear();
+            }
+
+            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>(), new List<(long, string)>());
+
+            // Resolve damage fields now — FillTargets is called after BattleLog.Add, so we read here
+            for (int i = 0; i < shots.Count; i++)
+            {
+                var s = shots[i];
+                if (s.Entry != null)
+                {
+                    try
+                    {
+                        var t = Traverse.Create(s.Entry);
+                        s.Deflected = t.Field("deflected").GetValue<bool>();
+                        var parts   = t.Field("damagedParts").GetValue<List<BodyPartRecord>>();
+                        s.DidDamage = parts != null && parts.Count > 0;
+                        shots[i]    = s;
+                    }
+                    catch { }
+                }
+            }
+
+            var summaries = new List<string>();
+            var starts    = new List<(long Tick, string Text)>();
+
+            // Canonical info: always (colonistName, otherId, otherDisplayName)
+            (string ColonistName, string OtherId, string OtherName) Info(CombatEvent e) =>
+                e.InitiatorIsColonist
+                    ? (e.Initiator, e.TargetId,    e.Target)
+                    : (e.Target,    e.InitiatorId, e.Initiator);
+
+            // Group by identity: same colonist + same other ThingID = same fight
+            var groups = shots.GroupBy(e => { var i = Info(e); return (i.ColonistName, i.OtherId); }).ToList();
+
+            // Count how many distinct IDs share each (colonistName, otherName) display pair
+            var nameCount = groups
+                .GroupBy(g => { var i = Info(g.First()); return (i.ColonistName, i.OtherName); })
+                .ToDictionary(g => g.Key, g => g.Count());
+            var nameCounter = new Dictionary<(string, string), int>();
+
+            foreach (var group in groups)
+            {
+                var info     = Info(group.First());
+                string col   = info.ColonistName;
+                string other = info.OtherName;
+                var nameKey  = (col, other);
+
+                // Assign display name: no number if only one, first stays bare, rest get 2/3/...
+                string displayOther;
+                if (nameCount[nameKey] == 1)
+                {
+                    displayOther = other;
+                }
+                else
+                {
+                    if (!nameCounter.ContainsKey(nameKey)) nameCounter[nameKey] = 0;
+                    nameCounter[nameKey]++;
+                    int n = nameCounter[nameKey];
+                    displayOther = n == 1 ? other : $"{other} {n}";
+                }
+
+                // Emit [Combat started] once per battle, using the same numbered name
+                string battleId = group.First().BattleId;
+                if (!battleId.NullOrEmpty() && _announcedBattles.Add(battleId))
+                {
+                    long startTick = group.Min(e => e.Tick);
+                    starts.Add((startTick, $"[Combat started] {col} vs {displayOther}"));
+                }
+
+                var lines = new List<string>();
+                foreach (var wGroup in group.GroupBy(e => (e.Initiator, e.Weapon.NullOrEmpty() ? "(unarmed)" : e.Weapon)))
+                    lines.Add(BuildCombatProse(wGroup.Key.Initiator, wGroup.Key.Initiator == col ? displayOther : col, wGroup.Key.Item2, wGroup.ToList()));
+
+                summaries.Add($"{col} vs {displayOther}:\n" + string.Join("\n", lines.Select(l => "  " + l)));
+            }
+
+            // Simple per-colonist summaries for LLM output
+            var simple              = new List<(long Tick, string Text)>();
+            var opponentsByColonist = new Dictionary<string, Dictionary<string, string>>(); // col -> {otherId -> otherName}
+            var hitsReceived        = new Dictionary<string, int>();
+            var firstTickByColonist = new Dictionary<string, long>();
+
+            foreach (var e in shots)
+            {
+                var info = Info(e);
+                if (!opponentsByColonist.ContainsKey(info.ColonistName))
+                    opponentsByColonist[info.ColonistName] = new Dictionary<string, string>();
+                opponentsByColonist[info.ColonistName][info.OtherId] = info.OtherName;
+
+                if (!firstTickByColonist.TryGetValue(info.ColonistName, out long earliest) || e.Tick < earliest)
+                    firstTickByColonist[info.ColonistName] = e.Tick;
+
+                if (!e.InitiatorIsColonist && e.ReachedTarget && e.DidDamage)
+                    hitsReceived[info.ColonistName] = (hitsReceived.TryGetValue(info.ColonistName, out int n) ? n : 0) + 1;
+            }
+
+            foreach (var kvp in opponentsByColonist)
+            {
+                string col      = kvp.Key;
+                var    oppNames = kvp.Value.Values.Distinct().ToList();
+                var    sb2      = new StringBuilder();
+                sb2.Append($"{col} — fought {JoinList(oppNames)}.");
+
+
+                hitsReceived.TryGetValue(col, out int hits);
+                var fate = outcomes.FirstOrDefault(o => o.Subject == col);
+                var personalParts = new List<string>();
+                if (hits > 0) personalParts.Add($"took {hits} hit{(hits == 1 ? "" : "s")}");
+                if (fate.Subject != null)
+                {
+                    var fateParts = new List<string>();
+                    if (!fate.Cause.NullOrEmpty())     fateParts.Add(fate.Cause);
+                    if (!fate.Initiator.NullOrEmpty()) fateParts.Add(fate.Initiator);
+                    string fateStr = fate.Outcome + (fateParts.Any() ? $" ({string.Join(" — ", fateParts)})" : "");
+                    personalParts.Add(fateStr);
+                }
+                if (personalParts.Any()) sb2.Append($" {string.Join(", ", personalParts)}.");
+
+                long tick = firstTickByColonist.TryGetValue(col, out long ft) ? ft : 0L;
+                simple.Add((tick, sb2.ToString()));
+            }
+
+            return (simple, summaries, starts);
+        }
+
+        private static string BuildCombatProse(string initiator, string target, string weapon, List<CombatEvent> attacks)
+        {
+            int total       = attacks.Count;
+            int hitCount    = attacks.Count(e => e.ReachedTarget);
+            int missCount   = total - hitCount;
+            int deflCount   = attacks.Count(e => e.ReachedTarget && e.Deflected);
+            int damageCount = attacks.Count(e => e.ReachedTarget && e.DidDamage);
+            int blockedCount = hitCount - deflCount - damageCount; // hit but no damage and not deflected
+
+            string wpn = weapon == "(unarmed)" ? "unarmed" : weapon;
+            var sb = new StringBuilder();
+            sb.Append($"{initiator} made {total} attack{(total == 1 ? "" : "s")} with {wpn}.");
+
+            if (missCount > 0)
+            {
+                var missByCover = attacks
+                    .Where(e => !e.ReachedTarget)
+                    .GroupBy(e => e.CoverHit.NullOrEmpty() ? "nothing" : e.CoverHit)
+                    .OrderByDescending(g => g.Count())
+                    .ToList();
+
+                // Entries ending in " dodging" are rendered without "hitting" prefix
+                var coverHits = missByCover.Where(g => !g.Key.EndsWith(" dodging")).ToList();
+                var dodges    = missByCover.Where(g =>  g.Key.EndsWith(" dodging")).ToList();
+
+                sb.Append($" Missed {missCount}");
+                var missParts = new List<string>();
+                missParts.AddRange(coverHits.Select(g => { int c = g.Count(); return $"hitting {g.Key} {c} time{(c == 1 ? "" : "s")}"; }));
+                missParts.AddRange(dodges.Select(g    => { int c = g.Count(); return $"{g.Key} {c} time{(c == 1 ? "" : "s")}"; }));
+                sb.Append(missParts.Count > 0 ? $", {JoinList(missParts)}." : ".");
+            }
+
+            if (hitCount > 0)
+            {
+                sb.Append($" {hitCount} attack{(hitCount == 1 ? "" : "s")} reached {target}");
+                var stops = new List<string>();
+                if (deflCount   > 0) stops.Add($"{deflCount} deflected by armor");
+                if (blockedCount > 0) stops.Add($"{blockedCount} blocked");
+                if (stops.Count > 0) sb.Append($", but {JoinList(stops)}");
+                sb.Append(".");
+                if (damageCount > 0)
+                    sb.Append($" {damageCount} did damage.");
+            }
+
+            return sb.ToString();
+        }
+
+        private static string JoinList(List<string> parts)
+        {
+            if (parts.Count == 0) return "";
+            if (parts.Count == 1) return parts[0];
+            return string.Join(", ", parts.Take(parts.Count - 1)) + " and " + parts.Last();
+        }
+
+        private static List<string> DrainList(List<string> source, string prefix)
+        {
+            var result = new List<string>();
+            lock (source)
+            {
+                foreach (var text in source)
+                    if (!text.NullOrEmpty()) result.Add(prefix.NullOrEmpty() ? text : $"{prefix} {text}");
+                source.Clear();
+            }
+            return result;
+        }
+
+        private class PawnHealthSnapshot
+        {
+            public int HealthPct;
+            public int BleedRatePct;      // 0 if not bleeding
+            public float HoursUntilDeath; // 0 if not applicable
+            public List<(string Source, int Pct)> Injuries
+                = new List<(string, int)>();
+            public List<(string Label, int InfPct, int ImmPct, string SevLabel, bool Lethal)> Diseases
+                = new List<(string, int, int, string, bool)>();
+            public List<(string Label, int SevPct, string SevLabel)> Other
+                = new List<(string, int, string)>();
+            public List<string> Addictions = new List<string>();
+
+            // Pipe-separated records; colon-separated fields within each record; special chars percent-encoded
+            public string Serialize()
+            {
+                var sb = new StringBuilder();
+                sb.Append(HealthPct);
+                sb.Append($"|B:{BleedRatePct}:{HoursUntilDeath:F1}");
+                foreach (var i in Injuries)
+                    sb.Append($"|I:{Esc(i.Source)}:{i.Pct}");
+                foreach (var d in Diseases)
+                    sb.Append($"|D:{Esc(d.Label)}:{d.InfPct}:{d.ImmPct}:{Esc(d.SevLabel)}:{(d.Lethal ? 1 : 0)}");
+                foreach (var o in Other)
+                    sb.Append($"|O:{Esc(o.Label)}:{o.SevPct}:{Esc(o.SevLabel)}");
+                foreach (var a in Addictions)
+                    sb.Append($"|A:{Esc(a)}");
+                return sb.ToString();
+            }
+
+            public static PawnHealthSnapshot Deserialize(string s)
+            {
+                var snap = new PawnHealthSnapshot();
+                if (s.NullOrEmpty()) return snap;
+                var records = s.Split('|');
+                if (records.Length > 0 && int.TryParse(records[0], out int hp))
+                    snap.HealthPct = hp;
+                for (int idx = 1; idx < records.Length; idx++)
+                {
+                    var r = records[idx];
+                    if (r.Length < 2) continue;
+                    var f = r.Substring(2).Split(':');
+                    switch (r[0])
+                    {
+                        case 'B':
+                            if (f.Length >= 2 && int.TryParse(f[0], out int br))
+                            {
+                                snap.BleedRatePct = br;
+                                if (float.TryParse(f[1], System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out float hud))
+                                    snap.HoursUntilDeath = hud;
+                            }
+                            break;
+                        case 'I':
+                            if (f.Length >= 2 && int.TryParse(f[1], out int ipct))
+                                snap.Injuries.Add((Unesc(f[0]), ipct));
+                            break;
+                        case 'D':
+                            if (f.Length >= 5 && int.TryParse(f[1], out int inf) && int.TryParse(f[2], out int imm))
+                                snap.Diseases.Add((Unesc(f[0]), inf, imm, Unesc(f[3]), f[4] == "1"));
+                            break;
+                        case 'O':
+                            if (f.Length >= 3 && int.TryParse(f[1], out int spct))
+                                snap.Other.Add((Unesc(f[0]), spct, Unesc(f[2])));
+                            break;
+                        case 'A':
+                            if (f.Length >= 1) snap.Addictions.Add(Unesc(f[0]));
+                            break;
+                    }
+                }
+                return snap;
+            }
+
+            private static string Esc(string s)   => s?.Replace("%", "%25").Replace("|", "%7C").Replace(":", "%3A") ?? "";
+            private static string Unesc(string s)  => s?.Replace("%3A", ":").Replace("%7C", "|").Replace("%25", "%") ?? "";
+        }
+
+        private static PawnHealthSnapshot TakePawnHealthSnapshot(Pawn p)
+        {
+            var snap = new PawnHealthSnapshot();
+            try
+            {
+                var hediffSet = p.health?.hediffSet;
+                if (hediffSet == null) return snap;
+
+                snap.HealthPct = Mathf.RoundToInt((p.health?.summaryHealth?.SummaryHealthPercent ?? 1f) * 100f);
+
+                float bleedRate = hediffSet.BleedRateTotal;
+                if (bleedRate > 0.001f)
+                {
+                    snap.BleedRatePct = Mathf.RoundToInt(bleedRate * 100f);
+                    try
+                    {
+                        float ticks = HealthUtility.TicksUntilDeathDueToBloodLoss(p);
+                        if (ticks < float.MaxValue / 2f)
+                            snap.HoursUntilDeath = ticks / GenDate.TicksPerHour;
+                    }
+                    catch { }
+                }
+
+                var bad = hediffSet.hediffs
+                    .Where(h => h.Visible && h.def.isBad && !(h is Hediff_MissingPart))
+                    .ToList();
+
+                if (!bad.Any()) return snap;
+
+                var injuryList   = bad.OfType<Hediff_Injury>().ToList();
+                float totalSev   = injuryList.Sum(h => h.Severity);
+                float healthLoss = 1f - snap.HealthPct / 100f;
+                foreach (var group in injuryList.GroupBy(h => InjurySourceKey(h)).OrderBy(g => g.Key))
+                {
+                    int pct = totalSev > 0f
+                        ? Mathf.RoundToInt(group.Sum(h => h.Severity) / totalSev * healthLoss * 100f)
+                        : 0;
+                    snap.Injuries.Add((group.Key, pct));
+                }
+
+                var rest = bad.Where(h => !(h is Hediff_Injury)).ToList();
+
+                foreach (var h in rest.OfType<Hediff_Addiction>())
+                    snap.Addictions.Add(h.Chemical?.LabelCap ?? h.def.LabelCap);
+
+                foreach (var h in rest.Where(h => !(h is Hediff_Addiction)
+                    && h.def.HasComp(typeof(HediffComp_Immunizable))))
+                {
+                    var immunComp = h.TryGetComp<HediffComp_Immunizable>();
+                    snap.Diseases.Add((
+                        h.def.LabelCap,
+                        Mathf.RoundToInt(h.Severity * 100f),
+                        Mathf.RoundToInt((immunComp?.Immunity ?? 0f) * 100f),
+                        h.CurStage?.label ?? "",
+                        h.def.lethalSeverity >= 0f
+                    ));
+                }
+
+                foreach (var h in rest.Where(h => !(h is Hediff_Addiction)
+                    && !h.def.HasComp(typeof(HediffComp_Immunizable))))
+                {
+                    snap.Other.Add((h.def.LabelCap, Mathf.RoundToInt(h.Severity * 100f), h.CurStage?.label ?? ""));
+                }
+            }
+            catch { }
+            return snap;
+        }
+
+        private static string RenderHealthConditions(PawnHealthSnapshot snap, PawnHealthSnapshot prev)
+        {
+            if (!snap.Injuries.Any() && !snap.Diseases.Any() && !snap.Other.Any() && !snap.Addictions.Any())
+                return "Healthy";
+
+            var parts = new List<string>();
+
+            // "Injuries, timber wolf - (54%)" or "Burns, fire - (54%, increased by 10% today)"
+            var prevInj = prev?.Injuries.ToDictionary(i => i.Source, i => i.Pct);
+            foreach (var inj in snap.Injuries)
+            {
+                string type   = string.Equals(inj.Source, "fire", StringComparison.OrdinalIgnoreCase) ? "Burns" : "Injuries";
+                string header = inj.Source == "scar"      ? "Old scars"
+                              : inj.Source.NullOrEmpty()  ? $"{type} (unknown cause)"
+                              : $"{type} from {inj.Source}";
+                string detail = prevInj != null && prevInj.TryGetValue(inj.Source, out int pp) && pp != inj.Pct
+                    ? $"{inj.Pct}%, {(inj.Pct > pp ? "increased" : "decreased")} by {Math.Abs(inj.Pct - pp)}% today"
+                    : $"{inj.Pct}%";
+                parts.Add($"{header} - ({detail})");
+            }
+
+            // "Infection, minor - (infection 5%, immunity 7%)"
+            var prevDis = prev?.Diseases.ToDictionary(d => d.Label);
+            foreach (var d in snap.Diseases)
+            {
+                string header = d.SevLabel.NullOrEmpty() ? d.Label : $"{d.Label}, {d.SevLabel}";
+                string infStr, immStr;
+                if (prevDis != null && prevDis.TryGetValue(d.Label, out var pd))
+                {
+                    infStr = FieldDelta("infection", d.InfPct, d.InfPct - pd.InfPct);
+                    immStr = FieldDelta("immunity",  d.ImmPct, d.ImmPct - pd.ImmPct);
+                }
+                else
+                {
+                    infStr = $"infection {d.InfPct}%";
+                    immStr = $"immunity {d.ImmPct}%";
+                }
+                parts.Add($"{header} - ({infStr}, {immStr})");
+            }
+
+            // "Blood loss, moderate - (37%)" or "Blood loss - (37%, decreased by 5% today)"
+            var prevOth = prev?.Other.ToDictionary(o => o.Label);
+            foreach (var o in snap.Other)
+            {
+                string header = o.SevLabel.NullOrEmpty() ? o.Label : $"{o.Label}, {o.SevLabel}";
+                string detail = prevOth != null && prevOth.TryGetValue(o.Label, out var po) && po.SevPct != o.SevPct
+                    ? $"{o.SevPct}%, {(o.SevPct > po.SevPct ? "increased" : "decreased")} by {Math.Abs(o.SevPct - po.SevPct)}% today"
+                    : $"{o.SevPct}%";
+                parts.Add($"{header} - ({detail})");
+            }
+
+            foreach (var a in snap.Addictions)
+                parts.Add($"Addicted to {a}");
+
+            return string.Join("; ", parts);
+        }
+
+        private static string FieldDelta(string name, int pct, int delta) =>
+            delta != 0
+                ? $"{name} {pct}%, {(delta > 0 ? "increased" : "decreased")} by {Math.Abs(delta)}% today"
+                : $"{name} {pct}%";
+
+        private static string InjurySourceKey(Hediff_Injury h)
+        {
+            try
+            {
+                var def = Traverse.Create(h).Field("source").GetValue<ThingDef>();
+                if (def?.label != null) return def.label;
+            }
+            catch { }
+            if (!h.sourceLabel.NullOrEmpty()) return h.sourceLabel;
+            // Fire has no weapon ThingDef — identify by hediff def instead
+            if (h.def?.defName == "Burn") return "fire";
+            // Permanent injuries (healed scars) lose their source info
+            if (h.TryGetComp<HediffComp_GetsPermanent>()?.IsPermanent == true) return "scar";
+            return "";
+        }
+
+        private static string InjuryPhrase(string sourceLabel)
+        {
+            if (string.Equals(sourceLabel, "fire", StringComparison.OrdinalIgnoreCase)) return "Burns from fire";
+            if (sourceLabel == "scar") return "Old scars";
+            if (sourceLabel.NullOrEmpty()) return "Injuries (unknown cause)";
+            return $"Injuries from {sourceLabel}";
+        }
+
         private static string GetPawnLocation(Pawn p)
         {
-            if (!p.Spawned) return "unspawned";
+            if (!p.Spawned)
+            {
+                if (p.ParentHolder is Pawn_CarryTracker carrierTracker)
+                    return GetPawnLocation(carrierTracker.pawn);
+                return "unspawned";
+            }
             var room = p.Position.GetRoom(p.Map);
-            if (room == null || room.IsHuge) return "outside";
+            if (room == null || room.IsHuge)
+            {
+                var roof = p.Map.roofGrid.RoofAt(p.Position);
+                if (roof != null && roof.isNatural) return "mountain tunnel";
+                return "outside";
+            }
             string role = room.Role?.label;
             if (role.NullOrEmpty() || role == "none") return "indoors";
             return role;
         }
 
-        private static List<string> GetNewArchiveEntries()
+        public static void CaptureArchiveEntry(IArchivable item)
         {
-            var archive = Find.Archive;
-            if (archive == null) return new List<string>();
-
-            int currentTick = Find.TickManager.TicksGame;
-            var result = new List<string>();
-
-            foreach (var item in archive.ArchivablesListForReading
-                .Where(i => i.CreatedTicksGame > _lastArchiveTick)
-                .OrderBy(i => i.CreatedTicksGame))
+            if (!_initialized || item == null) return;
+            try
             {
-                string label = StripTags(item.ArchivedLabel);
-                if (!label.NullOrEmpty()) result.Add($"[Event] {label}");
-            }
+                string label = null;
+                string tooltip = null;
+                try { label   = StripTags(item.ArchivedLabel); }   catch { }
+                try { tooltip = StripTags(item.ArchivedTooltip); } catch { }
 
-            _lastArchiveTick = currentTick;
-            return result;
-        }
+                string text;
+                string prefix;
 
-        private static List<string> GetNewLogEntries()
-        {
-            var all = Find.PlayLog?.AllEntries;
-            if (all == null || all.Count == 0) return new List<string>();
-
-            var result = new List<string>();
-            foreach (var entry in all)  // newest first
-            {
-                if (entry == _lastSeenEntry) break;
-                try
+                if (item is Letter)
                 {
-                    string text = StripTags(EntryToString(entry));
-                    if (!text.NullOrEmpty()) result.Add(text.CapitalizeFirst());
-                }
-                catch { }
-            }
+                    if (tooltip.NullOrEmpty())
+                    {
+                        try
+                        {
+                            var tv = Traverse.Create(item).Field("text");
+                            if (tv.FieldExists())
+                                tooltip = StripTags(tv.GetValue()?.ToString());
+                        }
+                        catch { }
+                    }
 
-            _lastSeenEntry = all[0];
-            result.Reverse();  // oldest first
-            return result;
+                    if (!label.NullOrEmpty() && !tooltip.NullOrEmpty() && label != tooltip)
+                        text = $"{label}: {tooltip}";
+                    else
+                        text = !label.NullOrEmpty() ? label : tooltip;
+                    prefix = "";
+                }
+                else
+                {
+                    text   = !label.NullOrEmpty() ? label : tooltip;
+                    prefix = "[Notification]";
+                }
+
+                if (!text.NullOrEmpty())
+                {
+                    long tick = Find.TickManager.TicksAbs;
+                    lock (_timeline) _timeline.Add((tick, prefix.NullOrEmpty() ? text : $"{prefix} {text}"));
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Skipped archive item ({item?.GetType().Name}): {e.Message}");
+            }
         }
 
-        private static string EntryToString(LogEntry entry)
+        public static void CaptureLogEntry(LogEntry entry)
+        {
+            if (!_initialized || entry == null) return;
+            try
+            {
+                string text = StripTags(FormatLogEntry(entry));
+                if (text.NullOrEmpty()) return;
+
+                long absTick = Find.TickManager.TicksAbs;
+                try { absTick = (long)Traverse.Create(entry).Field("ticksAbs").GetValue<int>(); } catch { }
+
+                lock (_timeline) _timeline.Add((absTick, text.CapitalizeFirst()));
+            }
+            catch { }
+        }
+
+        private static string FormatLogEntry(LogEntry entry)
         {
             if (entry == null) return null;
             if (entry is PlayLogEntry_Interaction)

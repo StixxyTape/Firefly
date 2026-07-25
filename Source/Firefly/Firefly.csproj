@@ -9,6 +9,9 @@
     <OutputPath>../../Assemblies</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- Linux defaults — override with /p:RimWorldPath=... /p:HarmonyPath=... if needed -->
+    <RimWorldPath Condition="'$(RimWorldPath)' == '' AND '$(OS)' != 'Windows_NT'">/home/stixxy/.local/share/Steam/steamapps/common/RimWorld</RimWorldPath>
+    <HarmonyPath Condition="'$(HarmonyPath)' == '' AND '$(OS)' != 'Windows_NT'">/home/stixxy/.local/share/Steam/steamapps/workshop/content/294100/3367948914</HarmonyPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,7 +38,7 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="0Harmony" Condition="'$(OS)' != 'Windows_NT'">
-      <HintPath>$(HarmonyPath)/Current/Assemblies/0Harmony.dll</HintPath>
+      <HintPath>$(HarmonyPath)/Assemblies/0Harmony.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System.Net.Http" />

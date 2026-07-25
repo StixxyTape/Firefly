@@ -108,6 +108,30 @@ namespace Firefly
             listing.Gap(18f);
             listing.Label("Tip: OpenRouter (openrouter.ai) gives you one key with access to many models. Browse at openrouter.ai/models.");
 
+            listing.Gap(18f);
+            listing.GapLine();
+            listing.Label("Incident Curve  — which storyteller's pacing drives in-game events");
+
+            var curveRow = listing.GetRect(Text.LineHeight);
+            string[] curves    = { "Phoebe", "Cassandra", "Randy" };
+            string[] curveLabels = { "Phoebe Chillax", "Cassandra Classic", "Randy Random" };
+            float btnW = curveRow.width / curves.Length;
+            for (int i = 0; i < curves.Length; i++)
+            {
+                var r = new Rect(curveRow.x + i * btnW, curveRow.y, btnW - 4f, curveRow.height);
+                bool active = Settings.IncidentCurve == curves[i];
+                if (active) Widgets.DrawHighlight(r);
+                if (Widgets.ButtonText(r, curveLabels[i]))
+                    Settings.IncidentCurve = curves[i];
+            }
+
+            listing.Gap(18f);
+            listing.GapLine();
+            listing.Label("Narrative Prompt  (optional)");
+            listing.Label("Replaces the built-in prompt entirely. Leave blank to use the default.");
+            var promptRect = listing.GetRect(90f);
+            Settings.CustomPrompt = Widgets.TextArea(promptRect, Settings.CustomPrompt ?? "");
+
             listing.End();
         }
     }
