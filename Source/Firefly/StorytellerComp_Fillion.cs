@@ -64,10 +64,14 @@ namespace Firefly
             int hourOfDay  = GenLocalDate.HourOfDay(map);
             int hourBucket = hourOfDay / 3;
 
-            // Prime on first tick — don't fire, just record where we are
+            // First tick — initialize immediately so capture methods start working right away
             if (lastHourBucket == -1)
             {
                 lastHourBucket = hourBucket;
+                ColonyLedger.SetOutputDir(GetOutputDir());
+                ColonyLedger.LoadPendingEvents();
+                ColonyLedger.Record(map, hourOfDay);
+                FlushLedger(map);
                 yield break;
             }
 
@@ -116,17 +120,6 @@ namespace Firefly
         private static void FlushLedger(Map map)
         {
             ColonyLedger.TryLoadPrevDayComparisons(Path.Combine(GetOutputDir(), "prev_day_comparisons.txt"));
-            try
-            {
-                string content = ColonyLedger.Compile(map);
-                if (content.NullOrEmpty()) return;
-                string dir = GetOutputDir();
-                File.WriteAllText(Path.Combine(dir, "timeline_current.txt"), content, Encoding.UTF8);
-            }
-            catch (Exception e)
-            {
-                Log.Warning($"[Firefly] Failed to flush ledger: {e.Message}");
-            }
         }
 
         private static readonly string SummarySystemPrompt =
@@ -144,32 +137,46 @@ namespace Firefly
         {
             try
             {
-                string timeline = ColonyLedger.Compile(map);
                 if (day < 0) day = ColonyLedger.RecordingDay;
-                // Build health section before Clear() so _prevDayHealth is updated correctly
+                string dir = GetOutputDir();
+
+                // Append health/relations/skills to timeline file before archiving
                 string healthSection = ColonyLedger.BuildComparisonSection(map);
-                ColonyLedger.SavePrevDayComparisons(Path.Combine(GetOutputDir(), "prev_day_comparisons.txt"));
+                ColonyLedger.SavePrevDayComparisons(Path.Combine(dir, "prev_day_comparisons.txt"));
+                if (!healthSection.NullOrEmpty())
+                    ColonyLedger.AppendRawToTimeline(healthSection);
+
+                // Assemble daily file from the three live files
+                string timelineContent = ReadFileOrEmpty(Path.Combine(dir, "current_timeline.txt"));
+                string combatContent   = ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt"));
+                string hazardContent   = ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt"));
+
                 ColonyLedger.Clear();
 
-                string dir = GetOutputDir();
-                File.WriteAllText(Path.Combine(dir, "timeline_current.txt"), "", Encoding.UTF8);
+                string fullContent = string.Concat(
+                    timelineContent,
+                    combatContent.NullOrEmpty()  ? "" : "\n" + combatContent,
+                    hazardContent.NullOrEmpty()  ? "" : "\n" + hazardContent);
 
-                if (timeline.NullOrEmpty()) return;
+                if (fullContent.NullOrEmpty()) return;
 
-                string fullContent = timeline + "\n" + healthSection;
+                string dailyDir = Path.Combine(dir, "daily records");
+                Directory.CreateDirectory(dailyDir);
+                File.WriteAllText(Path.Combine(dailyDir, $"daily_timeline_day{day}.txt"), fullContent, Encoding.UTF8);
 
-                // Save raw timeline with health snapshot
-                File.WriteAllText(Path.Combine(dir, $"daily_timeline_day{day}.txt"), fullContent, Encoding.UTF8);
-
-                SendSummaryRequest(dir, day, fullContent);
-
-                // Catch up any previous days that never got a summary (e.g. LLM was down)
-                BackfillMissingSummaries(dir, excludeDay: day);
+                SendSummaryRequest(dailyDir, day, fullContent);
+                BackfillMissingSummaries(dailyDir, excludeDay: day);
             }
             catch (Exception e)
             {
                 Log.Warning($"[Firefly] Failed to process daily timeline: {e.Message}");
             }
+        }
+
+        private static string ReadFileOrEmpty(string path)
+        {
+            try { return File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : ""; }
+            catch { return ""; }
         }
 
         private static void SendSummaryRequest(string dir, int day, string content)

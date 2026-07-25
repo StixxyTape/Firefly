@@ -19,14 +19,13 @@ namespace Firefly
         public string Target;
         public string TargetId;            // ThingID — distinguishes same-named animals
         public bool   ReachedTarget;       // bullet/blow reached the intended target
-        public bool   Deflected;           // resolved at drain time from Entry
-        public bool   DidDamage;           // resolved at drain time from Entry
+        public bool   Deflected;           // resolved at capture time from Entry
+        public bool   DidDamage;           // resolved at capture time from Entry
         public string CoverHit;            // thing physically struck when missing (null = clean miss)
         public string Weapon;              // weapon label (null = unarmed)
         public bool   InitiatorIsColonist; // used to normalise fight pair (colonist first)
         public string BattleId;            // Battle.GetUniqueLoadID() — for new-fight detection
         public long   Tick;                // TicksAbs at capture time — used to timestamp the combat-started event
-        public LogEntry_DamageResult Entry; // kept alive until DrainCombatEvents resolves damage fields
     }
 
     internal struct HazardEvent
@@ -34,8 +33,7 @@ namespace Firefly
         public string Victim;
         public string HazardLabel;         // human-readable label derived from ruleDef.defName
         public long   Tick;                // TicksAbs at capture time — used to timestamp the hazard-started event
-        public bool   DidDamage;           // resolved at drain time from Entry
-        public LogEntry_DamageResult Entry;
+        public bool   DidDamage;           // resolved at capture time from Entry
     }
 
     internal static class ColonyLedger
@@ -68,6 +66,20 @@ namespace Firefly
         public static void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry)
         {
             if (!_initialized) return;
+            bool didDamage = false;
+            bool deflected = false;
+            if (entry != null)
+            {
+                try
+                {
+                    var t   = Traverse.Create(entry);
+                    deflected = t.Field("deflected").GetValue<bool>();
+                    var parts = t.Field("damagedParts").GetValue<List<BodyPartRecord>>();
+                    didDamage = parts != null && parts.Count > 0;
+                }
+                catch { }
+            }
+            long tick = Find.TickManager.TicksAbs;
             var ev = new CombatEvent
             {
                 Initiator            = initiator   ?? "?",
@@ -75,21 +87,29 @@ namespace Firefly
                 Target               = target      ?? "?",
                 TargetId             = targetId    ?? target    ?? "?",
                 ReachedTarget        = reachedTarget,
+                Deflected            = deflected,
+                DidDamage            = didDamage,
                 Weapon               = weapon,
                 CoverHit             = coverHit,
                 InitiatorIsColonist  = initiatorIsColonist,
                 BattleId             = battleId    ?? "",
-                Tick                 = Find.TickManager.TicksAbs,
-                Entry                = entry
+                Tick                 = tick,
             };
             lock (_capturedBattleEvents) _capturedBattleEvents.Add(ev);
+
+            // Emit start event immediately on the first shot of a new battle
+            if (!ev.BattleId.NullOrEmpty() && _announcedBattles.Add(ev.BattleId))
+            {
+                string col   = initiatorIsColonist ? (initiator ?? "?") : (target   ?? "?");
+                string other = initiatorIsColonist ? (target    ?? "?") : (initiator ?? "?");
+                AppendEvent(tick, $"[Combat started] {col} vs {other}");
+            }
         }
 
         public static void CaptureStateChange(string targetName, string text)
         {
             if (!_initialized || targetName.NullOrEmpty()) return;
-            long tick = Find.TickManager.TicksAbs;
-            lock (_timeline) _timeline.Add((tick, text + "."));
+            AppendEvent(Find.TickManager.TicksAbs, text + ".");
         }
 
         public static void CaptureOutcome(string subject, string outcome, string initiator, string cause)
@@ -101,23 +121,37 @@ namespace Firefly
         public static void CaptureMessage(string text)
         {
             if (!_initialized || text.NullOrEmpty()) return;
-            long tick = Find.TickManager.TicksAbs;
-            lock (_timeline) _timeline.Add((tick, StripTags(text)));
+            AppendEvent(Find.TickManager.TicksAbs, StripTags(text));
         }
 
         public static void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry)
         {
             if (!_initialized) return;
-            var ev = new HazardEvent { Victim = victim ?? "?", HazardLabel = hazardLabel ?? "unknown hazard", Tick = Find.TickManager.TicksAbs, Entry = entry };
+            bool didDamage = false;
+            if (entry != null)
+            {
+                try
+                {
+                    var parts = Traverse.Create(entry).Field("damagedParts").GetValue<List<BodyPartRecord>>();
+                    didDamage = parts != null && parts.Count > 0;
+                }
+                catch { }
+            }
+            long tick = Find.TickManager.TicksAbs;
+            var ev = new HazardEvent { Victim = victim ?? "?", HazardLabel = hazardLabel ?? "unknown hazard", Tick = tick, DidDamage = didDamage };
             lock (_capturedHazardEvents) _capturedHazardEvents.Add(ev);
+
+            // Emit start event immediately the first time this victim takes this hazard
+            var key = (ev.Victim, ev.HazardLabel);
+            if (_announcedHazards.Add(key))
+                AppendEvent(tick, $"[{ev.Victim} started taking damage from {ev.HazardLabel}]");
         }
 
         // Caller provides the fully-formatted string including prefix
         public static void CaptureDecision(string formattedText)
         {
             if (!_initialized || formattedText.NullOrEmpty()) return;
-            long tick = Find.TickManager.TicksAbs;
-            lock (_timeline) _timeline.Add((tick, StripTags(formattedText)));
+            AppendEvent(Find.TickManager.TicksAbs, StripTags(formattedText));
         }
 
         private static readonly FieldInfo _initiatorField =
@@ -139,9 +173,11 @@ namespace Firefly
             long snapshotTick = Find.TickManager.TicksAbs;
             float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
 
-            // Weather and colonist snapshots become timestamped events in the flat timeline
+            EnsureFileHeaders(map, lon, snapshotTick);
+
+            // Weather and colonist activity snapshots — written every 3 hours
             string weather = map.weatherManager?.curWeather?.LabelCap ?? "Unknown";
-            _timeline.Add((snapshotTick, $"Weather — {weather}"));
+            AppendEvent(snapshotTick, $"Weather — {weather}");
 
             var colonists = map.mapPawns?.FreeColonists?.ToList();
             if (colonists != null)
@@ -155,21 +191,8 @@ namespace Firefly
                         activity += $" (carrying {StripTags(carried.Label)})";
                     string location = GetPawnLocation(p);
                     int mood = Mathf.RoundToInt((p.needs?.mood?.CurLevel ?? 0.5f) * 100f);
-                    _timeline.Add((snapshotTick, $"{p.LabelShort ?? "?"} — {activity} ({location}, mood {mood}%)"));
+                    AppendEvent(snapshotTick, $"{p.LabelShort ?? "?"} — {activity} ({location}, mood {mood}%)");
                 }
-            }
-
-            var (combatSimple, _, combatStarts) = DrainCombatEvents();
-            var (hazardSummaries, hazardStarts) = DrainHazardEvents();
-
-            _combatSummaries.AddRange(combatSimple);
-            _hazardSummaries.AddRange(hazardSummaries);
-
-            // Combat and hazard start events go straight into the timeline
-            lock (_timeline)
-            {
-                _timeline.AddRange(combatStarts);
-                _timeline.AddRange(hazardStarts);
             }
 
             Log.Message($"[Firefly] Ledger recorded: Hour {hourOfDay:D2}:00, Day {_recordingDay}");
@@ -576,6 +599,182 @@ namespace Firefly
             }
         }
 
+        private const  string PendingFileName    = "pending_events.txt";
+        private const  string CurrentTimelineFile = "current_timeline.txt";
+        private const  string CombatEventsFile    = "current_combat_events.txt";
+        private const  string HazardEventsFile    = "current_hazard_events.txt";
+        private static string _outputDir          = null;
+        private static bool   _timelineHeaderWritten = false;
+        private static bool   _combatHeaderWritten   = false;
+        private static bool   _hazardHeaderWritten   = false;
+
+        public static void SetOutputDir(string dir)
+        {
+            _outputDir = dir;
+        }
+
+        private static void EnsureFileHeaders(Map map, float lon, long tick)
+        {
+            if (_outputDir == null) return;
+            string colony = map.info?.parent?.Label ?? "Unnamed Colony";
+            string season = GenLocalDate.Season(map).ToString();
+            int year = GenDate.Year(tick, lon);
+            string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n";
+            if (!_timelineHeaderWritten) { WriteFileHeader(CurrentTimelineFile, header); _timelineHeaderWritten = true; }
+            if (!_combatHeaderWritten)   { WriteFileHeader(CombatEventsFile,    header); _combatHeaderWritten   = true; }
+            if (!_hazardHeaderWritten)   { WriteFileHeader(HazardEventsFile,    header); _hazardHeaderWritten   = true; }
+        }
+
+        private static void WriteFileHeader(string fileName, string header)
+        {
+            try { File.WriteAllText(Path.Combine(_outputDir, fileName), header, Encoding.UTF8); }
+            catch { }
+        }
+
+        public static void AppendRawToTimeline(string content)
+        {
+            if (_outputDir == null || content.NullOrEmpty()) return;
+            try { File.AppendAllText(Path.Combine(_outputDir, CurrentTimelineFile), content, Encoding.UTF8); }
+            catch { }
+        }
+
+        public static void DrainAndWriteSections(float lon)
+        {
+            var (combatSimple, _) = DrainCombatEvents();
+            var hazardSummaries   = DrainHazardEvents();
+            _combatSummaries.AddRange(combatSimple);
+            _hazardSummaries.AddRange(hazardSummaries);
+            AppendSectionToFile(CombatEventsFile, "COMBAT",  combatSimple,    lon);
+            AppendSectionToFile(HazardEventsFile, "HAZARDS", hazardSummaries, lon);
+            DeletePendingEvents();
+        }
+
+        private static void AppendEvent(long tick, string text)
+        {
+            lock (_timeline) _timeline.Add((tick, text));
+            if (_outputDir == null) return;
+            try
+            {
+                float lon = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
+                int hr  = GenDate.HourInteger(tick, lon);
+                int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                string flat = text.Replace("\r\n", " ").Replace('\n', ' ').Trim();
+                File.AppendAllText(Path.Combine(_outputDir, CurrentTimelineFile), $"  - [{hr:D2}:{min:D2}] {flat}\n", Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private static void AppendSectionToFile(string fileName, string header, List<(long Tick, string Text)> entries, float lon)
+        {
+            if (_outputDir == null || entries.Count == 0) return;
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine($"=== {header} ===");
+                foreach (var (tick, text) in entries.OrderBy(e => e.Tick))
+                {
+                    int hr  = GenDate.HourInteger(tick, lon);
+                    int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                    sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
+                }
+                File.AppendAllText(Path.Combine(_outputDir, fileName), sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        public static void FlushPendingEvents()
+        {
+            if (_outputDir == null) return;
+            try
+            {
+                var lines = new List<string>();
+                lock (_capturedBattleEvents)
+                {
+                    foreach (var e in _capturedBattleEvents)
+                        lines.Add($"C|{e.Initiator}|{e.InitiatorId}|{e.Target}|{e.TargetId}|{e.ReachedTarget}|{e.Deflected}|{e.DidDamage}|{e.CoverHit ?? ""}|{e.Weapon ?? ""}|{e.InitiatorIsColonist}|{e.BattleId}|{e.Tick}");
+                }
+                lock (_capturedHazardEvents)
+                {
+                    foreach (var e in _capturedHazardEvents)
+                        lines.Add($"H|{e.Victim}|{e.HazardLabel}|{e.Tick}|{e.DidDamage}");
+                }
+                lock (_capturedOutcomes)
+                {
+                    foreach (var (subject, outcome, initiator, cause) in _capturedOutcomes)
+                        lines.Add($"O|{subject}|{outcome}|{initiator}|{cause}");
+                }
+                File.WriteAllLines(Path.Combine(_outputDir, PendingFileName), lines, Encoding.UTF8);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Failed to flush pending events: {e.Message}");
+            }
+        }
+
+        public static void LoadPendingEvents()
+        {
+            if (_outputDir == null) return;
+            string path = Path.Combine(_outputDir, PendingFileName);
+            if (!File.Exists(path)) return;
+            try
+            {
+                var lines = File.ReadAllLines(path, Encoding.UTF8);
+                foreach (var line in lines)
+                {
+                    if (line.NullOrEmpty()) continue;
+                    var p = line.Split('|');
+                    if (p[0] == "C" && p.Length >= 13)
+                    {
+                        _capturedBattleEvents.Add(new CombatEvent
+                        {
+                            Initiator           = p[1],
+                            InitiatorId         = p[2],
+                            Target              = p[3],
+                            TargetId            = p[4],
+                            ReachedTarget       = p[5] == "True",
+                            Deflected           = p[6] == "True",
+                            DidDamage           = p[7] == "True",
+                            CoverHit            = p[8].NullOrEmpty() ? null : p[8],
+                            Weapon              = p[9].NullOrEmpty() ? null : p[9],
+                            InitiatorIsColonist = p[10] == "True",
+                            BattleId            = p[11],
+                            Tick                = long.Parse(p[12]),
+                        });
+                    }
+                    else if (p[0] == "H" && p.Length >= 5)
+                    {
+                        _capturedHazardEvents.Add(new HazardEvent
+                        {
+                            Victim      = p[1],
+                            HazardLabel = p[2],
+                            Tick        = long.Parse(p[3]),
+                            DidDamage   = p[4] == "True",
+                        });
+                    }
+                    else if (p[0] == "O" && p.Length >= 5)
+                    {
+                        _capturedOutcomes.Add((p[1], p[2], p[3], p[4]));
+                    }
+                }
+                Log.Message($"[Firefly] Loaded {lines.Length} pending events from disk.");
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] Failed to load pending events: {e.Message}");
+            }
+        }
+
+        private static void DeletePendingEvents()
+        {
+            if (_outputDir == null) return;
+            try
+            {
+                string path = Path.Combine(_outputDir, PendingFileName);
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
         public static void Clear()
         {
             _timeline.Clear();
@@ -585,12 +784,22 @@ namespace Firefly
             lock (_capturedOutcomes) _capturedOutcomes.Clear(); // fire can start again next day — re-announce it
             // _announcedBattles intentionally kept — battle IDs are unique per session, so a
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
+
+            _timelineHeaderWritten = false;
+            _combatHeaderWritten   = false;
+            _hazardHeaderWritten   = false;
+
+            if (_outputDir != null)
+            {
+                foreach (var f in new[] { CurrentTimelineFile, CombatEventsFile, HazardEventsFile })
+                    try { File.Delete(Path.Combine(_outputDir, f)); } catch { }
+            }
         }
 
         private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
         private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
 
-        private static (List<(long Tick, string Text)> Summaries, List<(long Tick, string Text)> Starts) DrainHazardEvents()
+        private static List<(long Tick, string Text)> DrainHazardEvents()
         {
             List<HazardEvent> events;
             lock (_capturedHazardEvents)
@@ -598,35 +807,15 @@ namespace Firefly
                 events = new List<HazardEvent>(_capturedHazardEvents);
                 _capturedHazardEvents.Clear();
             }
-            if (events.Count == 0) return (new List<(long, string)>(), new List<(long, string)>());
-
-            for (int i = 0; i < events.Count; i++)
-            {
-                var e = events[i];
-                if (e.Entry != null)
-                {
-                    try
-                    {
-                        var parts = Traverse.Create(e.Entry).Field("damagedParts").GetValue<List<BodyPartRecord>>();
-                        e.DidDamage = parts != null && parts.Count > 0;
-                        events[i] = e;
-                    }
-                    catch { }
-                }
-            }
+            if (events.Count == 0) return new List<(long, string)>();
 
             var summaries = new List<(long Tick, string Text)>();
-            var starts    = new List<(long Tick, string Text)>();
 
             foreach (var group in events.GroupBy(e => (e.Victim, e.HazardLabel)).OrderBy(g => g.Key.Victim))
             {
                 string victim    = group.Key.Victim;
                 string label     = group.Key.HazardLabel;
                 long   firstTick = group.Min(e => e.Tick);
-
-                var key = (victim, label);
-                if (_announcedHazards.Add(key))
-                    starts.Add((firstTick, $"[{victim} started taking damage from {label}]"));
 
                 int total       = group.Count();
                 int damageCount = group.Count(e => e.DidDamage);
@@ -636,7 +825,7 @@ namespace Firefly
                     line += $" ({damageCount} did damage)";
                 summaries.Add((firstTick, line + "."));
             }
-            return (summaries, starts);
+            return summaries;
         }
 
         private static string HazardVerb(string label)
@@ -653,7 +842,7 @@ namespace Firefly
             }
         }
 
-        private static (List<(long Tick, string Text)> Simple, List<string> Detailed, List<(long Tick, string Text)> Starts) DrainCombatEvents()
+        private static (List<(long Tick, string Text)> Simple, List<string> Detailed) DrainCombatEvents()
         {
             List<CombatEvent> shots;
             lock (_capturedBattleEvents)
@@ -669,28 +858,9 @@ namespace Firefly
                 _capturedOutcomes.Clear();
             }
 
-            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>(), new List<(long, string)>());
-
-            // Resolve damage fields now — FillTargets is called after BattleLog.Add, so we read here
-            for (int i = 0; i < shots.Count; i++)
-            {
-                var s = shots[i];
-                if (s.Entry != null)
-                {
-                    try
-                    {
-                        var t = Traverse.Create(s.Entry);
-                        s.Deflected = t.Field("deflected").GetValue<bool>();
-                        var parts   = t.Field("damagedParts").GetValue<List<BodyPartRecord>>();
-                        s.DidDamage = parts != null && parts.Count > 0;
-                        shots[i]    = s;
-                    }
-                    catch { }
-                }
-            }
+            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>());
 
             var summaries = new List<string>();
-            var starts    = new List<(long Tick, string Text)>();
 
             // Canonical info: always (colonistName, otherId, otherDisplayName)
             (string ColonistName, string OtherId, string OtherName) Info(CombatEvent e) =>
@@ -726,14 +896,6 @@ namespace Firefly
                     nameCounter[nameKey]++;
                     int n = nameCounter[nameKey];
                     displayOther = n == 1 ? other : $"{other} {n}";
-                }
-
-                // Emit [Combat started] once per battle, using the same numbered name
-                string battleId = group.First().BattleId;
-                if (!battleId.NullOrEmpty() && _announcedBattles.Add(battleId))
-                {
-                    long startTick = group.Min(e => e.Tick);
-                    starts.Add((startTick, $"[Combat started] {col} vs {displayOther}"));
                 }
 
                 var lines = new List<string>();
@@ -789,7 +951,7 @@ namespace Firefly
                 simple.Add((tick, sb2.ToString()));
             }
 
-            return (simple, summaries, starts);
+            return (simple, summaries);
         }
 
         private static string BuildCombatProse(string initiator, string target, string weapon, List<CombatEvent> attacks)
@@ -1148,10 +1310,7 @@ namespace Firefly
                 }
 
                 if (!text.NullOrEmpty())
-                {
-                    long tick = Find.TickManager.TicksAbs;
-                    lock (_timeline) _timeline.Add((tick, prefix.NullOrEmpty() ? text : $"{prefix} {text}"));
-                }
+                    AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
             }
             catch (Exception e)
             {
@@ -1170,7 +1329,7 @@ namespace Firefly
                 long absTick = Find.TickManager.TicksAbs;
                 try { absTick = (long)Traverse.Create(entry).Field("ticksAbs").GetValue<int>(); } catch { }
 
-                lock (_timeline) _timeline.Add((absTick, text.CapitalizeFirst()));
+                AppendEvent(absTick, text.CapitalizeFirst());
             }
             catch { }
         }
