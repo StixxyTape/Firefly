@@ -142,7 +142,7 @@ namespace Firefly
             "\"did research\"). Mention health or mood only when it actually mattered. Then " +
             "note anything important that happened between colonists and how it landed.\n\n" +
             "Keep it plain and warm, like telling a friend what everyone did today. No drama, " +
-            "no metaphors, no lists.";
+            "no metaphors, no lists. Keep your summary to 5 lines max.";
 
         private static void WriteTimeline(Map map, int day = -1)
         {
@@ -292,9 +292,19 @@ namespace Firefly
             catch { return ""; }
         }
 
+        private static readonly string ArcSystemPrompt =
+            "You are Fillion, the keeper of a colony's journal. You receive daily summaries " +
+            "spanning all recorded days of colony life so far.\n\n" +
+            "Write a cohesive arc summary: the major events that shaped this period, how the " +
+            "colonists grew or struggled, key relationships that developed, and the overall " +
+            "trajectory of the colony. Think of it as a chapter summary.\n\n" +
+            "Keep it warm and grounded. 10 lines max. No lists, no timestamps — just a " +
+            "flowing narrative of the period.";
+
         private static void SendSummaryRequest(string dir, int day, string content)
         {
             string summaryPath = Path.Combine(dir, $"daily_summary_day{day}.txt");
+            bool triggerArc = day >= 15 && day % 15 == 0;
             string custom = FireflyMod.Settings.CustomPrompt;
             string systemPrompt = !custom.NullOrEmpty() ? custom : SummarySystemPrompt;
             Log.Message($"[Firefly] Sending Day {day} to LLM for summary...");
@@ -306,8 +316,60 @@ namespace Firefly
                     try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
                     catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary day {day}: {e.Message}"); }
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
+                    if (triggerArc) SendArcSummaryRequest(dir, day);
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
+        }
+
+        private static void SendArcSummaryRequest(string dir, int day)
+        {
+            try
+            {
+                var summaryFiles = Directory.GetFiles(dir, "daily_summary_day*.txt")
+                    .Select(f =>
+                    {
+                        string stem   = Path.GetFileNameWithoutExtension(f);
+                        string dayStr = stem.Substring("daily_summary_day".Length);
+                        return int.TryParse(dayStr, out int d) ? (d, f) : (-1, f);
+                    })
+                    .Where(x => x.Item1 >= 0 && x.Item1 <= day)
+                    .OrderBy(x => x.Item1)
+                    .ToList();
+
+                if (summaryFiles.Count == 0) return;
+
+                var sb = new StringBuilder();
+                foreach (var (d, path) in summaryFiles)
+                {
+                    string text;
+                    try { text = File.ReadAllText(path, Encoding.UTF8); }
+                    catch { continue; }
+                    if (text.NullOrEmpty()) continue;
+                    sb.AppendLine($"=== Day {d} ===");
+                    sb.AppendLine(text);
+                    sb.AppendLine();
+                }
+
+                string combined = sb.ToString();
+                if (combined.NullOrEmpty()) return;
+
+                string arcPath = Path.Combine(dir, $"arc_summary_day{day}.txt");
+                Log.Message($"[Firefly] Sending arc summary request through Day {day}...");
+                LLMClient.Send(
+                    ArcSystemPrompt,
+                    combined,
+                    onSuccess: arcText =>
+                    {
+                        try { File.WriteAllText(arcPath, arcText, Encoding.UTF8); }
+                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write arc summary day {day}: {e.Message}"); }
+                        Log.Message($"[Firefly] Arc summary written: Day {day}");
+                    },
+                    onError: err => Log.Warning($"[Firefly] Arc summary LLM failed for Day {day}: {err}"));
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] SendArcSummaryRequest failed: {e.Message}");
+            }
         }
 
         private static void BackfillMissingSummaries(string dir, int excludeDay)

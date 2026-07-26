@@ -223,9 +223,10 @@ namespace Firefly
             {
                 if (p == null) continue;
                 string name = p.LabelShort ?? "?";
+                string id   = p.ThingID ?? name;
                 var snap = TakePawnHealthSnapshot(p);
-                currentHealth[name] = snap;
-                _prevDayHealth.TryGetValue(name, out PawnHealthSnapshot prev);
+                currentHealth[id] = snap;
+                _prevDayHealth.TryGetValue(id, out PawnHealthSnapshot prev);
 
                 // Overall line: health % + optional delta + optional bleeding
                 string overallLine = $"Overall: {snap.HealthPct}%";
@@ -278,13 +279,15 @@ namespace Firefly
             return sb.ToString();
         }
 
-        // Snapshot format: "DirectRel1,DirectRel2|TotalOpinion|ThoughtLabel1:val1;ThoughtLabel2:val2"
+        // Snapshot format: "NameA->NameB|DirectRel1,DirectRel2|TotalOpinion|ThoughtLabel1:val1;ThoughtLabel2:val2"
+        // Key is "ThingIDA->ThingIDB" to survive duplicate display names.
         private static Dictionary<string, string> GetRelationSnapshot(Map map, List<Pawn> colonists)
         {
             var snapshot = new Dictionary<string, string>();
             foreach (var pawnA in colonists)
             {
                 if (pawnA == null) continue;
+                string idA   = pawnA.ThingID   ?? pawnA.LabelShort ?? "?";
                 string nameA = pawnA.LabelShort ?? "?";
 
                 // Collect every pawn this colonist has any tracked link with
@@ -303,6 +306,7 @@ namespace Firefly
                 foreach (var pawnB in related)
                 {
                     if (pawnB == null) continue;
+                    string idB   = pawnB.ThingID   ?? pawnB.LabelShort ?? "?";
                     string nameB = pawnB.LabelShort ?? "?";
                     try
                     {
@@ -313,7 +317,6 @@ namespace Firefly
 
                         int opinion = pawnA.relations?.OpinionOf(pawnB) ?? 0;
 
-                        // Individual opinion-affecting memories about pawnB
                         var thoughts = pawnA.needs?.mood?.thoughts?.memories?.Memories
                             ?.OfType<Thought_MemorySocial>()
                             .Where(t => t.otherPawn == pawnB && t.OpinionOffset() != 0f)
@@ -322,7 +325,7 @@ namespace Firefly
 
                         string relStr     = string.Join(",", directRels);
                         string thoughtStr = string.Join(";", thoughts);
-                        snapshot[$"{nameA}->{nameB}"] = $"{relStr}|{opinion}|{thoughtStr}";
+                        snapshot[$"{idA}->{idB}"] = $"{nameA}->{nameB}|{relStr}|{opinion}|{thoughtStr}";
                     }
                     catch { }
                 }
@@ -339,17 +342,10 @@ namespace Firefly
             // Check all current pairs for changes vs yesterday
             foreach (var kvp in current)
             {
-                string key = kvp.Key;
-                int arrow = key.IndexOf("->");
-                if (arrow < 0) continue;
-                string nameA = key.Substring(0, arrow);
-                string nameB = key.Substring(arrow + 2);
+                _prevDayRelations.TryGetValue(kvp.Key, out string prevValue);
 
-                _prevDayRelations.TryGetValue(key, out string prevValue);
-                // prevValue null = this is a new relationship entirely
-
-                ParseRelEntry(kvp.Value, out string curRels, out int curOpinion, out string curThoughts);
-                ParseRelEntry(prevValue ?? "||", out string prevRels, out int prevOpinion, out string prevThoughts);
+                ParseRelEntry(kvp.Value,   out string nameA, out string nameB, out string curRels,  out int curOpinion,  out string curThoughts);
+                ParseRelEntry(prevValue ?? "->||", out _,    out _,            out string prevRels, out int prevOpinion, out string prevThoughts);
 
                 var changes = new List<string>();
 
@@ -384,11 +380,7 @@ namespace Firefly
             foreach (var kvp in _prevDayRelations)
             {
                 if (current.ContainsKey(kvp.Key)) continue;
-                int arrow = kvp.Key.IndexOf("->");
-                if (arrow < 0) continue;
-                string nameA = kvp.Key.Substring(0, arrow);
-                string nameB = kvp.Key.Substring(arrow + 2);
-                ParseRelEntry(kvp.Value, out string prevRels, out _, out _);
+                ParseRelEntry(kvp.Value, out string nameA, out string nameB, out string prevRels, out _, out _);
                 var prevRelList = prevRels.Split(',').Where(r => !r.NullOrEmpty()).ToList();
                 foreach (var r in prevRelList)
                 {
@@ -416,11 +408,12 @@ namespace Firefly
             foreach (var p in colonists)
             {
                 if (p?.skills == null) continue;
+                string id   = p.ThingID ?? p.LabelShort ?? "?";
                 string name = p.LabelShort ?? "?";
                 var parts = p.skills.skills
                     .Where(s => !s.TotallyDisabled)
                     .Select(s => $"{s.def.LabelCap}:{s.Level}:{s.passion}");
-                snapshot[name] = string.Join(";", parts);
+                snapshot[id] = $"{name}\t{string.Join(";", parts)}";
             }
             return snapshot;
         }
@@ -434,8 +427,14 @@ namespace Firefly
             {
                 if (!_prevDaySkills.TryGetValue(kvp.Key, out string prevValue)) continue;
 
-                var curSkills  = ParseSkillSnapshot(kvp.Value);
-                var prevSkills = ParseSkillSnapshot(prevValue);
+                int tab = kvp.Value.IndexOf('\t');
+                string displayName = tab >= 0 ? kvp.Value.Substring(0, tab) : kvp.Key;
+                string curRaw      = tab >= 0 ? kvp.Value.Substring(tab + 1) : kvp.Value;
+                int ptab = prevValue.IndexOf('\t');
+                string prevRaw = ptab >= 0 ? prevValue.Substring(ptab + 1) : prevValue;
+
+                var curSkills  = ParseSkillSnapshot(curRaw);
+                var prevSkills = ParseSkillSnapshot(prevRaw);
 
                 var pawnChanges = new List<string>();
                 foreach (var skill in curSkills)
@@ -453,7 +452,7 @@ namespace Firefly
                 }
 
                 if (pawnChanges.Any())
-                    lines.Add($"  {kvp.Key}: {string.Join(", ", pawnChanges)}");
+                    lines.Add($"  {displayName}: {string.Join(", ", pawnChanges)}");
             }
 
             if (!lines.Any()) return "";
@@ -489,12 +488,17 @@ namespace Firefly
             return result;
         }
 
-        private static void ParseRelEntry(string value, out string relations, out int opinion, out string thoughts)
+        private static void ParseRelEntry(string value, out string nameA, out string nameB, out string relations, out int opinion, out string thoughts)
         {
+            // Format: "NameA->NameB|rels|opinion|thoughts"
             var parts = value?.Split('|') ?? new string[0];
-            relations = parts.Length > 0 ? parts[0] : "";
-            opinion   = parts.Length > 1 && int.TryParse(parts[1], out int o) ? o : 0;
-            thoughts  = parts.Length > 2 ? parts[2] : "";
+            string names = parts.Length > 0 ? parts[0] : "->";
+            int arrow = names.IndexOf("->");
+            nameA     = arrow >= 0 ? names.Substring(0, arrow) : names;
+            nameB     = arrow >= 0 ? names.Substring(arrow + 2) : "";
+            relations = parts.Length > 1 ? parts[1] : "";
+            opinion   = parts.Length > 2 && int.TryParse(parts[2], out int o) ? o : 0;
+            thoughts  = parts.Length > 3 ? parts[3] : "";
         }
 
         public static void TryLoadPrevDayComparisons(string filePath)
