@@ -605,8 +605,6 @@ namespace Firefly
         private const  string HazardEventsFile    = "current_hazard_events.txt";
         private static string _outputDir          = null;
         private static bool   _timelineHeaderWritten = false;
-        private static bool   _combatHeaderWritten   = false;
-        private static bool   _hazardHeaderWritten   = false;
 
         public static void SetOutputDir(string dir)
         {
@@ -619,10 +617,29 @@ namespace Firefly
             string colony = map.info?.parent?.Label ?? "Unnamed Colony";
             string season = GenLocalDate.Season(map).ToString();
             int year = GenDate.Year(tick, lon);
-            string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n";
-            if (!_timelineHeaderWritten) { WriteFileHeader(CurrentTimelineFile, header); _timelineHeaderWritten = true; }
-            if (!_combatHeaderWritten)   { WriteFileHeader(CombatEventsFile,    header); _combatHeaderWritten   = true; }
-            if (!_hazardHeaderWritten)   { WriteFileHeader(HazardEventsFile,    header); _hazardHeaderWritten   = true; }
+            if (!_timelineHeaderWritten)
+            {
+                string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n";
+                WriteFileHeader(CurrentTimelineFile, header);
+                _timelineHeaderWritten = true;
+
+                if (GenDate.DaysPassed == 0)
+                {
+                    try
+                    {
+                        var scenario = Find.Scenario;
+                        string sName = scenario?.name;
+                        string sDesc = StripTags(scenario?.description);
+                        if (!sName.NullOrEmpty())
+                        {
+                            string flat = sDesc.NullOrEmpty() ? "" : sDesc.Replace("\r\n", " ").Replace('\n', ' ').Trim();
+                            string line = flat.NullOrEmpty() ? sName : $"{sName} — {flat}";
+                            AppendRawToTimeline($"  - [00:00] {line}\n");
+                        }
+                    }
+                    catch { }
+                }
+            }
         }
 
         private static void WriteFileHeader(string fileName, string header)
@@ -786,8 +803,6 @@ namespace Firefly
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
 
             _timelineHeaderWritten = false;
-            _combatHeaderWritten   = false;
-            _hazardHeaderWritten   = false;
 
             if (_outputDir != null)
             {
@@ -1309,8 +1324,15 @@ namespace Firefly
                     prefix = "[Notification]";
                 }
 
-                if (!text.NullOrEmpty())
-                    AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
+                if (text.NullOrEmpty()) return;
+
+                // Skip administrative noise
+                if (item.GetType().Name == "RitualOpportunityLetter") return;
+                if (label != null && (
+                    label.IndexOf("role deactivated", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    label.IndexOf("role activated",   StringComparison.OrdinalIgnoreCase) >= 0)) return;
+
+                AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
             }
             catch (Exception e)
             {

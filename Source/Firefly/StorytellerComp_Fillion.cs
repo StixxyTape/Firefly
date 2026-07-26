@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using RimWorld;
 using Verse;
 using System.Linq;
@@ -19,6 +20,7 @@ namespace Firefly
     public class StorytellerComp_Fillion : StorytellerComp
     {
         private int lastHourBucket = -1;
+        private int lastDrainHour  = -1;
 
         private List<StorytellerComp> _delegateComps;
         private string _lastCurve;
@@ -68,11 +70,20 @@ namespace Firefly
             if (lastHourBucket == -1)
             {
                 lastHourBucket = hourBucket;
+                lastDrainHour  = hourOfDay;
                 ColonyLedger.SetOutputDir(GetOutputDir());
                 ColonyLedger.LoadPendingEvents();
                 ColonyLedger.Record(map, hourOfDay);
                 FlushLedger(map);
                 yield break;
+            }
+
+            // Hourly drain of combat/hazard buffers into the live section files
+            if (hourOfDay != lastDrainHour)
+            {
+                lastDrainHour = hourOfDay;
+                float drainLon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
+                ColonyLedger.DrainAndWriteSections(drainLon);
             }
 
             if (hourBucket == lastHourBucket) yield break;
@@ -146,10 +157,14 @@ namespace Firefly
                 if (!healthSection.NullOrEmpty())
                     ColonyLedger.AppendRawToTimeline(healthSection);
 
-                // Assemble daily file from the three live files
+                // Drain any remaining combat/hazard events before assembling
+                float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
+                ColonyLedger.DrainAndWriteSections(lon);
+
+                // Assemble daily file from the three live files, merging repeated sections
                 string timelineContent = ReadFileOrEmpty(Path.Combine(dir, "current_timeline.txt"));
-                string combatContent   = ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt"));
-                string hazardContent   = ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt"));
+                string combatContent   = MergeCombatSections(ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt")));
+                string hazardContent   = MergeHazardSections(ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt")));
 
                 ColonyLedger.Clear();
 
@@ -171,6 +186,92 @@ namespace Firefly
             {
                 Log.Warning($"[Firefly] Failed to process daily timeline: {e.Message}");
             }
+        }
+
+        // [HH:MM] {desc} {N} time(s)[ ({X} did damage)].
+        private static readonly Regex HazardEntryRx = new Regex(
+            @"^\s*-\s+\[(\d+):(\d+)\]\s+(.+?)\s+(\d+)\s+times?(?:\s+\((\d+)\s+did\s+damage\))?\.?\s*$",
+            RegexOptions.Multiline | RegexOptions.Compiled);
+
+        // [HH:MM] {col} — fought {opponents}.[rest]
+        private static readonly Regex CombatEntryRx = new Regex(
+            @"^\s*-\s+\[(\d+):(\d+)\]\s+(.+?)\s+—\s+fought\s+(.+?)\.(.*)$",
+            RegexOptions.Multiline | RegexOptions.Compiled);
+
+        private static readonly Regex HitsRx = new Regex(
+            @"took\s+(\d+)\s+hits?", RegexOptions.Compiled);
+
+        private static string MergeHazardSections(string raw)
+        {
+            if (raw.NullOrEmpty()) return raw;
+            var entries = new List<(int HM, int H, int M, string Desc, int Count, int Dmg)>();
+            foreach (Match m in HazardEntryRx.Matches(raw))
+            {
+                int h = int.Parse(m.Groups[1].Value), mn = int.Parse(m.Groups[2].Value);
+                entries.Add((h * 60 + mn, h, mn,
+                    m.Groups[3].Value.Trim(),
+                    int.Parse(m.Groups[4].Value),
+                    m.Groups[5].Success ? int.Parse(m.Groups[5].Value) : 0));
+            }
+            if (entries.Count == 0) return "";
+            var sb = new StringBuilder("=== HAZARDS ===\n");
+            foreach (var g in entries.GroupBy(e => e.Desc).OrderBy(g => g.Min(e => e.HM)))
+            {
+                var   first  = g.OrderBy(e => e.HM).First();
+                int   total  = g.Sum(e => e.Count);
+                int   dmg    = g.Sum(e => e.Dmg);
+                string line  = $"{g.Key} {total} time{(total == 1 ? "" : "s")}";
+                if (dmg > 0 && dmg < total) line += $" ({dmg} did damage)";
+                sb.AppendLine($"  - [{first.H:D2}:{first.M:D2}] {line}.");
+            }
+            return sb.ToString();
+        }
+
+        private static string MergeCombatSections(string raw)
+        {
+            if (raw.NullOrEmpty()) return raw;
+            var entries = new List<(int HM, int H, int M, string Col, List<string> Opps, int Hits, string Fate)>();
+            foreach (Match m in CombatEntryRx.Matches(raw))
+            {
+                int h = int.Parse(m.Groups[1].Value), mn = int.Parse(m.Groups[2].Value);
+                // Split on ", " then also on " and " to handle "A, B and C" → ["A","B","C"]
+                var opps = m.Groups[4].Value
+                    .Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)
+                    .SelectMany(s => s.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries))
+                    .Select(s => s.Trim())
+                    .Where(s => s.Length > 0)
+                    .ToList();
+                string rest = m.Groups[5].Value.Trim().TrimStart('.');
+                int hits = 0;
+                var hm = HitsRx.Match(rest);
+                if (hm.Success)
+                {
+                    hits = int.Parse(hm.Groups[1].Value);
+                    rest = (rest.Substring(0, hm.Index) + rest.Substring(hm.Index + hm.Length))
+                           .Trim().TrimStart(',').TrimEnd('.').Trim();
+                }
+                else
+                {
+                    rest = rest.TrimEnd('.').Trim();
+                }
+                entries.Add((h * 60 + mn, h, mn, m.Groups[3].Value.Trim(), opps, hits, rest));
+            }
+            if (entries.Count == 0) return "";
+            var sb = new StringBuilder("=== COMBAT ===\n");
+            foreach (var g in entries.GroupBy(e => e.Col).OrderBy(g => g.Min(e => e.HM)))
+            {
+                var   first    = g.OrderBy(e => e.HM).First();
+                var   allOpps  = g.SelectMany(e => e.Opps).Distinct().ToList();
+                int   hits     = g.Sum(e => e.Hits);
+                string fate    = g.Select(e => e.Fate).FirstOrDefault(f => !f.NullOrEmpty()) ?? "";
+                string line    = $"{g.Key} — fought {string.Join(", ", allOpps)}.";
+                var   parts    = new List<string>();
+                if (hits > 0)         parts.Add($"took {hits} hit{(hits == 1 ? "" : "s")}");
+                if (!fate.NullOrEmpty()) parts.Add(fate.TrimEnd('.'));
+                if (parts.Any())      line += $" {string.Join(", ", parts)}.";
+                sb.AppendLine($"  - [{first.H:D2}:{first.M:D2}] {line}");
+            }
+            return sb.ToString();
         }
 
         private static string ReadFileOrEmpty(string path)

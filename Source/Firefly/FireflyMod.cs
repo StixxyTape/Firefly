@@ -113,16 +113,25 @@ namespace Firefly
             listing.Label("Incident Curve  — which storyteller's pacing drives in-game events");
 
             var curveRow = listing.GetRect(Text.LineHeight);
-            string[] curves    = { "Phoebe", "Cassandra", "Randy" };
-            string[] curveLabels = { "Phoebe Chillax", "Cassandra Classic", "Randy Random" };
-            float btnW = curveRow.width / curves.Length;
-            for (int i = 0; i < curves.Length; i++)
+            var curveBtnRect = curveRow.LeftPartPixels(220f);
+            var curveOptions = new List<(string Id, string Label)>
             {
-                var r = new Rect(curveRow.x + i * btnW, curveRow.y, btnW - 4f, curveRow.height);
-                bool active = Settings.IncidentCurve == curves[i];
-                if (active) Widgets.DrawHighlight(r);
-                if (Widgets.ButtonText(r, curveLabels[i]))
-                    Settings.IncidentCurve = curves[i];
+                ("Phoebe",    "Phoebe Chillax"),
+                ("Cassandra", "Cassandra Classic"),
+                ("Randy",     "Randy Random"),
+                ("None",      "None (no incidents)"),
+            };
+            string currentLabel = curveOptions.Find(o => o.Id == Settings.IncidentCurve).Label
+                                  ?? Settings.IncidentCurve;
+            if (Widgets.ButtonText(curveBtnRect, $"{currentLabel}  ▼"))
+            {
+                var menuOptions = new List<FloatMenuOption>();
+                foreach (var (id, label) in curveOptions)
+                {
+                    var curveId = id;
+                    menuOptions.Add(new FloatMenuOption(label, () => Settings.IncidentCurve = curveId));
+                }
+                Find.WindowStack.Add(new FloatMenu(menuOptions));
             }
 
             listing.Gap(18f);
