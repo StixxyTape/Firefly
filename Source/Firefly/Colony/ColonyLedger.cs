@@ -1257,12 +1257,12 @@ namespace Firefly
                 string infStr, immStr;
                 if (prevDis != null && prevDis.TryGetValue(d.Label, out var pd))
                 {
-                    infStr = FieldDelta("infection", d.InfPct, d.InfPct - pd.InfPct);
+                    infStr = FieldDelta("affliction", d.InfPct, d.InfPct - pd.InfPct);
                     immStr = FieldDelta("immunity",  d.ImmPct, d.ImmPct - pd.ImmPct);
                 }
                 else
                 {
-                    infStr = $"infection {d.InfPct}%";
+                    infStr = $"affliction {d.InfPct}%";
                     immStr = $"immunity {d.ImmPct}%";
                 }
                 parts.Add($"{header} - ({infStr}, {immStr})");
