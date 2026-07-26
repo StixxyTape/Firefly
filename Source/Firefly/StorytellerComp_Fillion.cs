@@ -293,13 +293,16 @@ namespace Firefly
         }
 
         private static readonly string ArcSystemPrompt =
-            "You are Fillion, the keeper of a colony's journal. You receive daily summaries " +
-            "spanning all recorded days of colony life so far.\n\n" +
-            "Write a cohesive arc summary: the major events that shaped this period, how the " +
-            "colonists grew or struggled, key relationships that developed, and the overall " +
-            "trajectory of the colony. Think of it as a chapter summary.\n\n" +
-            "Keep it warm and grounded. 10 lines max. No lists, no timestamps — just a " +
-            "flowing narrative of the period.";
+            "You are Fillion, the keeper of a colony's journal. You receive the current colony " +
+            "history (if one exists) followed by recent daily summaries that have not yet been " +
+            "folded in.\n\n" +
+            "Rewrite the colony history as a single updated document: 10 lines capturing the " +
+            "most important narrative moments, character arcs, ongoing story threads, and the " +
+            "overall shape of the colony's life so far. Carry forward what still matters from " +
+            "the existing history and weave in what's new.\n\n" +
+            "No lists, no timestamps, no section headers — just a flowing narrative, plain and " +
+            "warm, as if telling someone who's been away everything they need to know about " +
+            "this colony's story.";
 
         private static void SendSummaryRequest(string dir, int day, string content)
         {
@@ -316,6 +319,7 @@ namespace Firefly
                     try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
                     catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary day {day}: {e.Message}"); }
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
+                    ColonyLedger.WriteContextFile();
                     if (triggerArc) SendArcSummaryRequest(dir, day);
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
@@ -325,21 +329,42 @@ namespace Firefly
         {
             try
             {
-                var summaryFiles = Directory.GetFiles(dir, "daily_summary_day*.txt")
+                string arcPath      = Path.Combine(dir, "colony_history.txt");
+                string lastDayPath  = Path.Combine(dir, "colony_history_last_day.txt");
+
+                // Determine which daily summaries are new since the last arc update
+                int lastArcDay = 0;
+                if (File.Exists(lastDayPath))
+                    int.TryParse(File.ReadAllText(lastDayPath, Encoding.UTF8).Trim(), out lastArcDay);
+
+                var newSummaries = Directory.GetFiles(dir, "daily_summary_day*.txt")
                     .Select(f =>
                     {
                         string stem   = Path.GetFileNameWithoutExtension(f);
                         string dayStr = stem.Substring("daily_summary_day".Length);
                         return int.TryParse(dayStr, out int d) ? (d, f) : (-1, f);
                     })
-                    .Where(x => x.Item1 >= 0 && x.Item1 <= day)
+                    .Where(x => x.Item1 > lastArcDay && x.Item1 <= day)
                     .OrderBy(x => x.Item1)
                     .ToList();
 
-                if (summaryFiles.Count == 0) return;
+                if (newSummaries.Count == 0) return;
 
                 var sb = new StringBuilder();
-                foreach (var (d, path) in summaryFiles)
+
+                // Prepend existing history so the LLM can carry it forward
+                string existingHistory = File.Exists(arcPath)
+                    ? ReadFileOrEmpty(arcPath)
+                    : null;
+                if (!existingHistory.NullOrEmpty())
+                {
+                    sb.AppendLine("=== EXISTING COLONY HISTORY ===");
+                    sb.AppendLine(existingHistory);
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("=== RECENT DAILY SUMMARIES ===");
+                foreach (var (d, path) in newSummaries)
                 {
                     string text;
                     try { text = File.ReadAllText(path, Encoding.UTF8); }
@@ -353,18 +378,22 @@ namespace Firefly
                 string combined = sb.ToString();
                 if (combined.NullOrEmpty()) return;
 
-                string arcPath = Path.Combine(dir, $"arc_summary_day{day}.txt");
-                Log.Message($"[Firefly] Sending arc summary request through Day {day}...");
+                Log.Message($"[Firefly] Updating colony history through Day {day}...");
                 LLMClient.Send(
                     ArcSystemPrompt,
                     combined,
                     onSuccess: arcText =>
                     {
-                        try { File.WriteAllText(arcPath, arcText, Encoding.UTF8); }
-                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write arc summary day {day}: {e.Message}"); }
-                        Log.Message($"[Firefly] Arc summary written: Day {day}");
+                        try
+                        {
+                            File.WriteAllText(arcPath, arcText, Encoding.UTF8);
+                            File.WriteAllText(lastDayPath, day.ToString(), Encoding.UTF8);
+                        }
+                        catch (Exception e) { Log.Warning($"[Firefly] Failed to write colony history: {e.Message}"); }
+                        Log.Message($"[Firefly] Colony history updated through Day {day}");
+                        ColonyLedger.WriteContextFile();
                     },
-                    onError: err => Log.Warning($"[Firefly] Arc summary LLM failed for Day {day}: {err}"));
+                    onError: err => Log.Warning($"[Firefly] Colony history LLM failed for Day {day}: {err}"));
             }
             catch (Exception e)
             {

@@ -10,8 +10,11 @@ namespace Firefly
 
         static void Postfix()
         {
-            if (++_counter % 500 == 0)
+            _counter++;
+            if (_counter % 500 == 0)
                 ColonyLedger.FlushPendingEvents();
+            if (_counter % 1000 == 0)
+                ColonyLedger.WriteContextFile();
         }
     }
 }

@@ -850,6 +850,78 @@ namespace Firefly
             }
         }
 
+        public static void WriteContextFile()
+        {
+            if (_outputDir == null) return;
+            try
+            {
+                string dailyDir = Path.Combine(_outputDir, "daily records");
+                if (!Directory.Exists(dailyDir)) return;
+
+                var sb = new StringBuilder();
+
+                // Colony history (rolling overall summary)
+                string historyPath = Path.Combine(dailyDir, "colony_history.txt");
+                if (File.Exists(historyPath))
+                {
+                    string history = File.ReadAllText(historyPath, Encoding.UTF8);
+                    if (!history.NullOrEmpty())
+                    {
+                        sb.AppendLine("=== COLONY HISTORY ===");
+                        sb.AppendLine(history.Trim());
+                        sb.AppendLine();
+                    }
+                }
+
+                // Daily summaries since the last colony history update
+                int lastArcDay = 0;
+                string lastDayPath = Path.Combine(dailyDir, "colony_history_last_day.txt");
+                if (File.Exists(lastDayPath))
+                    int.TryParse(File.ReadAllText(lastDayPath, Encoding.UTF8).Trim(), out lastArcDay);
+
+                var recentSummaries = Directory.GetFiles(dailyDir, "daily_summary_day*.txt")
+                    .Select(f =>
+                    {
+                        string stem   = Path.GetFileNameWithoutExtension(f);
+                        string dayStr = stem.Substring("daily_summary_day".Length);
+                        return int.TryParse(dayStr, out int d) ? (d, f) : (-1, f);
+                    })
+                    .Where(x => x.Item1 > lastArcDay)
+                    .OrderBy(x => x.Item1)
+                    .ToList();
+
+                if (recentSummaries.Count > 0)
+                {
+                    sb.AppendLine("=== RECENT DAYS ===");
+                    foreach (var (d, path) in recentSummaries)
+                    {
+                        string text;
+                        try { text = File.ReadAllText(path, Encoding.UTF8); }
+                        catch { continue; }
+                        if (text.NullOrEmpty()) continue;
+                        sb.AppendLine($"Day {d}:");
+                        sb.AppendLine(text.Trim());
+                        sb.AppendLine();
+                    }
+                }
+
+                // Current day timeline
+                string timelinePath = Path.Combine(_outputDir, CurrentTimelineFile);
+                if (File.Exists(timelinePath))
+                {
+                    string timeline = File.ReadAllText(timelinePath, Encoding.UTF8);
+                    if (!timeline.NullOrEmpty())
+                    {
+                        sb.AppendLine("=== TODAY ===");
+                        sb.Append(timeline.TrimEnd());
+                    }
+                }
+
+                File.WriteAllText(Path.Combine(_outputDir, "llm_colony_context.txt"), sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
         private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
         private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
 
