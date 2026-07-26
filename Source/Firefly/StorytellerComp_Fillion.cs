@@ -165,7 +165,20 @@ namespace Firefly
                 string timelineContent = ReadFileOrEmpty(Path.Combine(dir, "current_timeline.txt"));
                 string combatContent   = MergeCombatSections(ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt")));
                 string hazardContent   = MergeHazardSections(ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt")));
+                string rosterSection   = ColonyLedger.BuildPawnRosterSection();
+
                 ColonyLedger.Clear();
+
+                // Insert pawn roster between the day header and === EVENTS ===
+                if (!rosterSection.NullOrEmpty())
+                {
+                    const string eventsMarker = "=== EVENTS ===";
+                    int idx = timelineContent.IndexOf(eventsMarker, StringComparison.Ordinal);
+                    if (idx >= 0)
+                        timelineContent = timelineContent.Substring(0, idx) + rosterSection + "\n" + timelineContent.Substring(idx);
+                    else
+                        timelineContent = rosterSection + "\n" + timelineContent;
+                }
 
                 string fullContent = string.Concat(
                     timelineContent,
@@ -268,7 +281,7 @@ namespace Firefly
                 if (hits > 0)         parts.Add($"took {hits} hit{(hits == 1 ? "" : "s")}");
                 if (!fate.NullOrEmpty()) parts.Add(fate.TrimEnd('.'));
                 if (parts.Any())      line += $" {string.Join(", ", parts)}.";
-                sb.AppendLine($"  - [{first.H:D2}:{first.M:D2}] {line}");
+                sb.AppendLine($"  - {line}");
             }
             return sb.ToString();
         }

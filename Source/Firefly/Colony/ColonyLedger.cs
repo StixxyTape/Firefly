@@ -96,11 +96,14 @@ namespace Firefly
             };
             lock (_capturedBattleEvents) _capturedBattleEvents.Add(ev);
 
-            // Emit start event immediately on the first shot of a new battle
-            string initiatorTag = IntroduceTag(initiatorPawn);
-            string targetTag    = IntroduceTag(targetPawn);
-            if (!ev.BattleId.NullOrEmpty() && _announcedBattles.Add(ev.BattleId))
+            // Emit one [Combat started] per unique colonist–enemy pair
+            string colonistId = initiatorIsColonist ? initiatorId : targetId;
+            string enemyId    = initiatorIsColonist ? targetId    : initiatorId;
+            string pairKey    = !colonistId.NullOrEmpty() && !enemyId.NullOrEmpty() ? $"{colonistId}:{enemyId}" : null;
+            if (!pairKey.NullOrEmpty() && _announcedBattles.Add(pairKey))
             {
+                string initiatorTag = IntroduceTag(initiatorPawn);
+                string targetTag    = IntroduceTag(targetPawn);
                 string col      = initiatorIsColonist ? (initiator ?? "?") : (target   ?? "?");
                 string other    = initiatorIsColonist ? (target    ?? "?") : (initiator ?? "?");
                 string colTag   = initiatorIsColonist ? initiatorTag : targetTag;
@@ -553,7 +556,8 @@ namespace Firefly
         private const  string HazardEventsFile    = "current_hazard_events.txt";
         private static string _outputDir          = null;
         private static bool   _timelineHeaderWritten = false;
-        private static readonly HashSet<string> _trackedPawnIds = new HashSet<string>();
+        private static readonly HashSet<string> _trackedPawnIds  = new HashSet<string>();
+        private static readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
 
         public static void SetOutputDir(string dir)
         {
@@ -632,10 +636,52 @@ namespace Firefly
             bool isNew;
             lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
             if (!isNew) return "";
+            string name       = pawn.LabelShort ?? "?";
             string descriptor = GetPawnDescriptor(pawn);
+            lock (_trackedPawnLines) { _trackedPawnLines.Add((name, descriptor)); }
             return $" ({descriptor})";
         }
 
+
+        public static string BuildPawnRosterSection()
+        {
+            lock (_trackedPawnLines)
+            {
+                if (_trackedPawnLines.Count == 0) return "";
+                var order = new[] { "Colonist", "Colony Slave", "Colony Prisoner", "Colony Animal", "Wild Animal" };
+                var groups = _trackedPawnLines
+                    .GroupBy(p => p.Descriptor)
+                    .OrderBy(g => { int i = System.Array.IndexOf(order, g.Key); return i >= 0 ? i : order.Length; })
+                    .ThenBy(g => g.Key);
+                var sb = new StringBuilder("=== CHARACTER ROSTER ===\n");
+                foreach (var group in groups)
+                {
+                    sb.AppendLine(RosterCategoryHeader(group.Key) + ":");
+                    foreach (var (name, _) in group)
+                        sb.AppendLine($"  - {name}");
+                }
+                return sb.ToString();
+            }
+        }
+
+        private static string RosterCategoryHeader(string descriptor)
+        {
+            switch (descriptor)
+            {
+                case "Colonist":        return "Colonists";
+                case "Colony Slave":    return "Colony Slaves";
+                case "Colony Prisoner": return "Colony Prisoners";
+                case "Colony Animal":   return "Colony Animals";
+                case "Wild Animal":     return "Wild Animals";
+                case "No Faction":      return "No Faction";
+                case "Unknown":         return "Unknown";
+                default:
+                    int comma = descriptor.IndexOf(", ", StringComparison.Ordinal);
+                    return comma >= 0
+                        ? $"{descriptor.Substring(0, comma)} ({descriptor.Substring(comma + 2)})"
+                        : descriptor;
+            }
+        }
 
         private static string InjectAfterFirst(string text, string name, string tag)
         {
@@ -790,7 +836,8 @@ namespace Firefly
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
 
             _timelineHeaderWritten = false;
-            lock (_trackedPawnIds) _trackedPawnIds.Clear();
+            lock (_trackedPawnIds)  _trackedPawnIds.Clear();
+            lock (_trackedPawnLines) _trackedPawnLines.Clear();
 
             if (_outputDir != null)
             {
@@ -801,6 +848,19 @@ namespace Firefly
 
         private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
         private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
+
+        private static string FirstSentence(string s)
+        {
+            if (s.NullOrEmpty()) return s;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '.' || c == '!' || c == '?')
+                    if (i + 1 >= s.Length || s[i + 1] == ' ' || s[i + 1] == '\n')
+                        return s.Substring(0, i + 1);
+            }
+            return s;
+        }
 
         private static List<(long Tick, string Text)> DrainHazardEvents()
         {
@@ -1176,7 +1236,7 @@ namespace Firefly
             var parts = new List<string>();
 
             // "Injuries, timber wolf - (54%)" or "Burns, fire - (54%, increased by 10% today)"
-            var prevInj = prev?.Injuries.ToDictionary(i => i.Source, i => i.Pct);
+            var prevInj = prev?.Injuries.GroupBy(i => i.Source).ToDictionary(g => g.Key, g => g.First().Pct);
             foreach (var inj in snap.Injuries)
             {
                 string type   = string.Equals(inj.Source, "fire", StringComparison.OrdinalIgnoreCase) ? "Burns" : "Injuries";
@@ -1190,7 +1250,7 @@ namespace Firefly
             }
 
             // "Infection, minor - (infection 5%, immunity 7%)"
-            var prevDis = prev?.Diseases.ToDictionary(d => d.Label);
+            var prevDis = prev?.Diseases.GroupBy(d => d.Label).ToDictionary(g => g.Key, g => g.First());
             foreach (var d in snap.Diseases)
             {
                 string header = d.SevLabel.NullOrEmpty() ? d.Label : $"{d.Label}, {d.SevLabel}";
@@ -1209,7 +1269,7 @@ namespace Firefly
             }
 
             // "Blood loss, moderate - (37%)" or "Blood loss - (37%, decreased by 5% today)"
-            var prevOth = prev?.Other.ToDictionary(o => o.Label);
+            var prevOth = prev?.Other.GroupBy(o => o.Label).ToDictionary(g => g.Key, g => g.First());
             foreach (var o in snap.Other)
             {
                 string header = o.SevLabel.NullOrEmpty() ? o.Label : $"{o.Label}, {o.SevLabel}";
@@ -1315,12 +1375,16 @@ namespace Firefly
                 if (text.NullOrEmpty()) return;
 
                 // Skip administrative noise
-                if (item.GetType().Name == "RitualOpportunityLetter") return;
                 if (label != null && (
                     label.IndexOf("role deactivated", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     label.IndexOf("role activated",   StringComparison.OrdinalIgnoreCase) >= 0)) return;
 
-                Log.Message($"[Firefly] Archive item: type={item.GetType().Name}, label={label}");
+                // Ritual opportunity letters: include but truncate to first sentence
+                bool isOpportunity = item.GetType().Name == "RitualOpportunityLetter"
+                    || (item is Letter lo && lo.def?.defName == "NeutralEvent"
+                        && label != null && label.IndexOf("opportunity", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (isOpportunity)
+                    text = $"{label}: {FirstSentence(tooltip)}";
 
                 AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
             }

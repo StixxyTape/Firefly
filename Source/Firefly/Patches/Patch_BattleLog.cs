@@ -17,11 +17,10 @@ namespace Firefly
                 // RangedFire is just the firing event — RangedImpact has the actual outcome
                 if (entry is BattleLogEntry_RangedFire) return;
 
-                var concerns = entry.GetConcerns().ToList();
-                if (!concerns.OfType<Pawn>().Any(p => p.IsColonist)) return;
-
                 if (entry is BattleLogEntry_StateTransition)
                 {
+                    var concerns = entry.GetConcerns().ToList();
+                    if (!concerns.OfType<Pawn>().Any(p => p.IsColonist)) return;
                     HandleStateTransition(concerns, entry);
                     return;
                 }
@@ -40,6 +39,8 @@ namespace Firefly
 
                 if (entry is BattleLogEntry_DamageTaken)
                 {
+                    var concerns = entry.GetConcerns().ToList();
+                    if (!concerns.OfType<Pawn>().Any(p => p.IsColonist)) return;
                     HandleDamageTaken(entry);
                     return;
                 }
@@ -66,6 +67,7 @@ namespace Firefly
 
             bool reachedTarget       = recipientPawn != null && recipientPawn == originalTargetPawn;
             bool initiatorIsColonist = initiatorPawn?.IsColonist == true;
+            if (!initiatorIsColonist && !(originalTargetPawn?.IsColonist == true)) return;
 
             string coverHit = null;
             if (!reachedTarget)
@@ -75,7 +77,8 @@ namespace Firefly
             }
 
             var colonistPawn = initiatorIsColonist ? initiatorPawn : originalTargetPawn;
-            string battleId  = colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
+            string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
+                               ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
             ColonyLedger.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiatorPawn, originalTargetPawn);
         }
@@ -99,10 +102,12 @@ namespace Firefly
             string ruleDefName       = ruleDef?.defName ?? "";
             bool reachedTarget       = !ruleDefName.Contains("Dodge") && !ruleDefName.Contains("Miss");
             bool initiatorIsColonist = initiator?.IsColonist == true;
+            if (!initiatorIsColonist && !(recipientPawn?.IsColonist == true)) return;
             string coverHit          = ruleDefName.Contains("Dodge") ? $"{targetName} dodging" : null;
 
             var colonistPawn = initiatorIsColonist ? initiator : recipientPawn;
-            string battleId  = colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
+            string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
+                               ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
             ColonyLedger.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiator, recipientPawn);
         }
