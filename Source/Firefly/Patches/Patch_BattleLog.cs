@@ -77,7 +77,7 @@ namespace Firefly
             var colonistPawn = initiatorIsColonist ? initiatorPawn : originalTargetPawn;
             string battleId  = colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
-            ColonyLedger.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult);
+            ColonyLedger.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiatorPawn, originalTargetPawn);
         }
 
         private static void HandleMelee(LogEntry entry)
@@ -104,7 +104,7 @@ namespace Firefly
             var colonistPawn = initiatorIsColonist ? initiator : recipientPawn;
             string battleId  = colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
-            ColonyLedger.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult);
+            ColonyLedger.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiator, recipientPawn);
         }
 
         private static void HandleDamageTaken(LogEntry entry)
@@ -115,7 +115,7 @@ namespace Firefly
             if (recipientPawn == null || !recipientPawn.IsColonist) return;
             string victim      = recipientPawn.LabelShort ?? "?";
             string hazardLabel = GetHazardLabel(ruleDef);
-            ColonyLedger.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult);
+            ColonyLedger.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult, recipientPawn);
         }
 
         private static readonly Regex _pascalCase = new Regex("([A-Z])", RegexOptions.Compiled);
@@ -147,11 +147,14 @@ namespace Firefly
             try { culpritPart   = t.Field("culpritHediffTargetPart").GetValue<BodyPartRecord>()
                                ?? t.Field("culpritTargetPart").GetValue<BodyPartRecord>(); } catch { }
 
-            string causeStr = null;
+            string causeStr    = null;
+            string subjectTag  = ColonyLedger.IntroduceTag(subject);
+            string initiatorTag = initiator != null ? ColonyLedger.IntroduceTag(initiator) : "";
             var sb = new System.Text.StringBuilder();
             sb.Append(subject.LabelShort);
+            sb.Append(subjectTag);
             sb.Append($" {stateChange}");
-            if (initiator != null) sb.Append($" by {initiator.LabelShort}");
+            if (initiator != null) sb.Append($" by {initiator.LabelShort}{initiatorTag}");
             if (culpritHediff != null)
             {
                 causeStr = culpritHediff.LabelCap;

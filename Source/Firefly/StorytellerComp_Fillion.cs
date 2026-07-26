@@ -155,23 +155,22 @@ namespace Firefly
                 string healthSection = ColonyLedger.BuildComparisonSection(map);
                 ColonyLedger.SavePrevDayComparisons(Path.Combine(dir, "prev_day_comparisons.txt"));
                 if (!healthSection.NullOrEmpty())
-                    ColonyLedger.AppendRawToTimeline(healthSection);
+                    ColonyLedger.AppendRawToTimeline("\n" + healthSection);
 
                 // Drain any remaining combat/hazard events before assembling
                 float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
                 ColonyLedger.DrainAndWriteSections(lon);
 
-                // Assemble daily file from the three live files, merging repeated sections
+                // Assemble daily file from the live files, merging repeated sections
                 string timelineContent = ReadFileOrEmpty(Path.Combine(dir, "current_timeline.txt"));
                 string combatContent   = MergeCombatSections(ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt")));
                 string hazardContent   = MergeHazardSections(ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt")));
-
                 ColonyLedger.Clear();
 
                 string fullContent = string.Concat(
                     timelineContent,
-                    combatContent.NullOrEmpty()  ? "" : "\n" + combatContent,
-                    hazardContent.NullOrEmpty()  ? "" : "\n" + hazardContent);
+                    combatContent.NullOrEmpty() ? "" : "\n" + combatContent,
+                    hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent);
 
                 if (fullContent.NullOrEmpty()) return;
 

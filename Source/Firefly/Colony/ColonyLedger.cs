@@ -39,8 +39,7 @@ namespace Firefly
     internal static class ColonyLedger
     {
         private static readonly List<(long Tick, string Text)> _timeline        = new List<(long, string)>();
-        private static readonly List<(long Tick, string Text)>  _combatSummaries = new List<(long, string)>();
-        private static readonly List<(long Tick, string Text)>  _hazardSummaries = new List<(long, string)>();
+
         private static int _recordingDay;
         private static bool _initialized = false;
         public static int RecordingDay => _recordingDay;
@@ -63,7 +62,7 @@ namespace Firefly
         private static readonly List<(string Subject, string Outcome, string Initiator, string Cause)> _capturedOutcomes
             = new List<(string, string, string, string)>();
 
-        public static void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry)
+        public static void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry, Pawn initiatorPawn = null, Pawn targetPawn = null)
         {
             if (!_initialized) return;
             bool didDamage = false;
@@ -98,11 +97,15 @@ namespace Firefly
             lock (_capturedBattleEvents) _capturedBattleEvents.Add(ev);
 
             // Emit start event immediately on the first shot of a new battle
+            string initiatorTag = IntroduceTag(initiatorPawn);
+            string targetTag    = IntroduceTag(targetPawn);
             if (!ev.BattleId.NullOrEmpty() && _announcedBattles.Add(ev.BattleId))
             {
-                string col   = initiatorIsColonist ? (initiator ?? "?") : (target   ?? "?");
-                string other = initiatorIsColonist ? (target    ?? "?") : (initiator ?? "?");
-                AppendEvent(tick, $"[Combat started] {col} vs {other}");
+                string col      = initiatorIsColonist ? (initiator ?? "?") : (target   ?? "?");
+                string other    = initiatorIsColonist ? (target    ?? "?") : (initiator ?? "?");
+                string colTag   = initiatorIsColonist ? initiatorTag : targetTag;
+                string otherTag = initiatorIsColonist ? targetTag    : initiatorTag;
+                AppendEvent(tick, $"[Combat started] {col}{colTag} vs {other}{otherTag}");
             }
         }
 
@@ -124,7 +127,7 @@ namespace Firefly
             AppendEvent(Find.TickManager.TicksAbs, StripTags(text));
         }
 
-        public static void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry)
+        public static void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry, Pawn victimPawn = null)
         {
             if (!_initialized) return;
             bool didDamage = false;
@@ -142,9 +145,10 @@ namespace Firefly
             lock (_capturedHazardEvents) _capturedHazardEvents.Add(ev);
 
             // Emit start event immediately the first time this victim takes this hazard
+            string victimTag = IntroduceTag(victimPawn);
             var key = (ev.Victim, ev.HazardLabel);
             if (_announcedHazards.Add(key))
-                AppendEvent(tick, $"[{ev.Victim} started taking damage from {ev.HazardLabel}]");
+                AppendEvent(tick, $"[{ev.Victim}{victimTag} started taking damage from {ev.HazardLabel}]");
         }
 
         // Caller provides the fully-formatted string including prefix
@@ -156,6 +160,8 @@ namespace Firefly
 
         private static readonly FieldInfo _initiatorField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
+        private static readonly FieldInfo _recipientField =
+            AccessTools.Field(typeof(PlayLogEntry_Interaction), "recipient");
 
         public static void Record(Map map, int hourOfDay)
         {
@@ -191,70 +197,12 @@ namespace Firefly
                         activity += $" (carrying {StripTags(carried.Label)})";
                     string location = GetPawnLocation(p);
                     int mood = Mathf.RoundToInt((p.needs?.mood?.CurLevel ?? 0.5f) * 100f);
-                    AppendEvent(snapshotTick, $"{p.LabelShort ?? "?"} — {activity} ({location}, mood {mood}%)");
+                    string introTag = IntroduceTag(p);
+                    AppendEvent(snapshotTick, $"{p.LabelShort ?? "?"}{introTag} — {activity} ({location}, mood {mood}%)");
                 }
             }
 
             Log.Message($"[Firefly] Ledger recorded: Hour {hourOfDay:D2}:00, Day {_recordingDay}");
-        }
-
-        public static string Compile(Map map)
-        {
-            var sb = new StringBuilder();
-
-            string colony = map.info?.parent?.Label ?? "Unnamed Colony";
-            long absTick = Find.TickManager.TicksAbs;
-            float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
-            int year = GenDate.Year(absTick, lon);
-            string season = GenLocalDate.Season(map).ToString();
-
-            sb.AppendLine($"=== DAY {_recordingDay} CHRONICLE — {colony} ===");
-            sb.AppendLine($"{season}, Year {year}");
-            sb.AppendLine();
-
-            if (_timeline.Count == 0 && _combatSummaries.Count == 0 && _hazardSummaries.Count == 0)
-            {
-                sb.AppendLine("(no data recorded this day)");
-                return sb.ToString();
-            }
-
-            // Flat chronological timeline
-            sb.AppendLine("=== TIMELINE ===");
-            var sorted = _timeline.OrderBy(e => e.Tick).ToList();
-            foreach (var (tick, text) in sorted)
-            {
-                int hr  = GenDate.HourInteger(tick, lon);
-                int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
-                string flat = text.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace("  ", " ").Trim();
-                sb.AppendLine($"  - [{hr:D2}:{min:D2}] {flat}");
-            }
-            sb.AppendLine();
-
-            if (_combatSummaries.Count > 0)
-            {
-                sb.AppendLine("=== COMBAT ===");
-                foreach (var (tick, text) in _combatSummaries.OrderBy(c => c.Tick))
-                {
-                    int hr  = GenDate.HourInteger(tick, lon);
-                    int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
-                    sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
-                }
-                sb.AppendLine();
-            }
-
-            if (_hazardSummaries.Count > 0)
-            {
-                sb.AppendLine("=== HAZARDS ===");
-                foreach (var (tick, text) in _hazardSummaries.OrderBy(h => h.Tick))
-                {
-                    int hr  = GenDate.HourInteger(tick, lon);
-                    int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
-                    sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
-                }
-                sb.AppendLine();
-            }
-
-            return sb.ToString();
         }
 
         // Called at midnight before sending to LLM — captures health + relations once per day
@@ -605,6 +553,7 @@ namespace Firefly
         private const  string HazardEventsFile    = "current_hazard_events.txt";
         private static string _outputDir          = null;
         private static bool   _timelineHeaderWritten = false;
+        private static readonly HashSet<string> _trackedPawnIds = new HashSet<string>();
 
         public static void SetOutputDir(string dir)
         {
@@ -619,7 +568,7 @@ namespace Firefly
             int year = GenDate.Year(tick, lon);
             if (!_timelineHeaderWritten)
             {
-                string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n";
+                string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n=== EVENTS ===\n";
                 WriteFileHeader(CurrentTimelineFile, header);
                 _timelineHeaderWritten = true;
 
@@ -634,7 +583,9 @@ namespace Firefly
                         {
                             string flat = sDesc.NullOrEmpty() ? "" : sDesc.Replace("\r\n", " ").Replace('\n', ' ').Trim();
                             string line = flat.NullOrEmpty() ? sName : $"{sName} — {flat}";
-                            AppendRawToTimeline($"  - [00:00] {line}\n");
+                            float hf = GenDate.HourFloat(tick, lon);
+                            int h = (int)hf, m = (int)((hf % 1f) * 60f);
+                            AppendRawToTimeline($"  - [{h:D2}:{m:D2}] {line}\n");
                         }
                     }
                     catch { }
@@ -655,12 +606,49 @@ namespace Firefly
             catch { }
         }
 
+        private static string GetPawnDescriptor(Pawn pawn)
+        {
+            try
+            {
+                if (pawn.IsFreeColonist)      return "Colonist";
+                if (pawn.IsSlaveOfColony)     return "Colony Slave";
+                if (pawn.IsPrisonerOfColony)  return "Colony Prisoner";
+                if (pawn.RaceProps?.Animal == true)
+                    return pawn.Faction == Faction.OfPlayer ? "Colony Animal" : "Wild Animal";
+                string factionName = pawn.Faction?.Name;
+                if (factionName.NullOrEmpty()) return "No Faction";
+                bool hostile = pawn.Faction.HostileTo(Faction.OfPlayer);
+                return $"{factionName}, {(hostile ? "Hostile" : "Friendly")}";
+            }
+            catch { return "Unknown"; }
+        }
+
+        // Returns " (Descriptor)" on first appearance, "" on subsequent ones.
+        public static string IntroduceTag(Pawn pawn)
+        {
+            if (!_initialized || pawn == null) return "";
+            string id = pawn.ThingID;
+            if (id.NullOrEmpty()) return "";
+            bool isNew;
+            lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
+            if (!isNew) return "";
+            string descriptor = GetPawnDescriptor(pawn);
+            return $" ({descriptor})";
+        }
+
+
+        private static string InjectAfterFirst(string text, string name, string tag)
+        {
+            if (tag.NullOrEmpty() || name.NullOrEmpty()) return text;
+            int idx = text.IndexOf(name, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return text;
+            return text.Substring(0, idx + name.Length) + tag + text.Substring(idx + name.Length);
+        }
+
         public static void DrainAndWriteSections(float lon)
         {
             var (combatSimple, _) = DrainCombatEvents();
             var hazardSummaries   = DrainHazardEvents();
-            _combatSummaries.AddRange(combatSimple);
-            _hazardSummaries.AddRange(hazardSummaries);
             AppendSectionToFile(CombatEventsFile, "COMBAT",  combatSimple,    lon);
             AppendSectionToFile(HazardEventsFile, "HAZARDS", hazardSummaries, lon);
             DeletePendingEvents();
@@ -795,14 +783,14 @@ namespace Firefly
         public static void Clear()
         {
             _timeline.Clear();
-            _combatSummaries.Clear();
-            _hazardSummaries.Clear();
+
             _announcedHazards.Clear();
             lock (_capturedOutcomes) _capturedOutcomes.Clear(); // fire can start again next day — re-announce it
             // _announcedBattles intentionally kept — battle IDs are unique per session, so a
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
 
             _timelineHeaderWritten = false;
+            lock (_trackedPawnIds) _trackedPawnIds.Clear();
 
             if (_outputDir != null)
             {
@@ -1332,6 +1320,8 @@ namespace Firefly
                     label.IndexOf("role deactivated", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     label.IndexOf("role activated",   StringComparison.OrdinalIgnoreCase) >= 0)) return;
 
+                Log.Message($"[Firefly] Archive item: type={item.GetType().Name}, label={label}");
+
                 AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
             }
             catch (Exception e)
@@ -1345,8 +1335,29 @@ namespace Firefly
             if (!_initialized || entry == null) return;
             try
             {
+                string initiatorTag = "";
+                string recipientTag = "";
+                Pawn   logInitiator = null;
+                Pawn   logRecipient = null;
+
+                if (entry is PlayLogEntry_Interaction)
+                {
+                    logInitiator = _initiatorField?.GetValue(entry) as Pawn;
+                    logRecipient = _recipientField?.GetValue(entry) as Pawn;
+                    bool colonistInvolved = (logInitiator?.IsFreeColonist ?? false)
+                                        || (logRecipient?.IsFreeColonist ?? false);
+                    if (!colonistInvolved) return;
+                    initiatorTag = IntroduceTag(logInitiator);
+                    recipientTag = IntroduceTag(logRecipient);
+                }
+
                 string text = StripTags(FormatLogEntry(entry));
                 if (text.NullOrEmpty()) return;
+
+                if (logInitiator?.LabelShort != null)
+                    text = InjectAfterFirst(text, logInitiator.LabelShort, initiatorTag);
+                if (logRecipient?.LabelShort != null)
+                    text = InjectAfterFirst(text, logRecipient.LabelShort, recipientTag);
 
                 long absTick = Find.TickManager.TicksAbs;
                 try { absTick = (long)Traverse.Create(entry).Field("ticksAbs").GetValue<int>(); } catch { }
