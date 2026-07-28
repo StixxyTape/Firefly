@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using RimWorld;
 using Verse;
 
@@ -57,8 +58,10 @@ namespace Firefly
         {
             foreach (var comp in GetDelegateComps())
             {
-                IEnumerable<FiringIncident> incidents = null;
-                try { incidents = comp.MakeIntervalIncidents(target); } catch { }
+                // Materialize inside the try — MakeIntervalIncidents returns an iterator whose body
+                // runs lazily, so exceptions thrown during enumeration escape a guard on the call site.
+                List<FiringIncident> incidents = null;
+                try { incidents = comp.MakeIntervalIncidents(target)?.ToList(); } catch { }
                 if (incidents == null) continue;
                 foreach (var fi in incidents)
                     if (fi != null) yield return fi;
