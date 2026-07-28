@@ -102,7 +102,7 @@ namespace Firefly
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 if (attempt > 1)
-                    await Task.Delay(TimeSpan.FromSeconds(3));
+                    await Task.Delay(TimeSpan.FromSeconds(3 * (attempt - 1)));
 
                 try
                 {

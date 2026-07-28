@@ -125,8 +125,8 @@ namespace Firefly
                 ("Randy",     "Randy Random"),
                 ("None",      "None (no incidents)"),
             };
-            string currentLabel = curveOptions.Find(o => o.Id == Settings.IncidentCurve).Label
-                                  ?? Settings.IncidentCurve;
+            var curveMatch = curveOptions.Find(o => o.Id == Settings.IncidentCurve);
+            string currentLabel = !curveMatch.Label.NullOrEmpty() ? curveMatch.Label : Settings.IncidentCurve;
             if (Widgets.ButtonText(curveBtnRect, $"{currentLabel}  ▼"))
             {
                 var menuOptions = new List<FloatMenuOption>();

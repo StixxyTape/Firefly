@@ -4,7 +4,7 @@ using Verse;
 
 namespace Firefly
 {
-[HarmonyPatch(typeof(Quest), nameof(Quest.End))]
+    [HarmonyPatch(typeof(Quest), nameof(Quest.End))]
     public static class Patch_Quest_End
     {
         static void Postfix(Quest __instance, QuestEndOutcome outcome)

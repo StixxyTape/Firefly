@@ -9,13 +9,17 @@ namespace Firefly
     {
         static void Prefix(Message msg, bool historical)
         {
-            if (historical) return;
-            if (msg?.text == null) return;
-            var def = msg.def;
-            if (def == MessageTypeDefOf.RejectInput ||
-                def == MessageTypeDefOf.CautionInput ||
-                def == MessageTypeDefOf.SilentInput) return;
-            ColonyLedger.Current?.CaptureMessage(msg.text);
+            try
+            {
+                if (historical) return;
+                if (msg?.text == null) return;
+                var def = msg.def;
+                if (def == MessageTypeDefOf.RejectInput ||
+                    def == MessageTypeDefOf.CautionInput ||
+                    def == MessageTypeDefOf.SilentInput) return;
+                ColonyLedger.Current?.CaptureMessage(msg.text);
+            }
+            catch { }
         }
     }
 }
