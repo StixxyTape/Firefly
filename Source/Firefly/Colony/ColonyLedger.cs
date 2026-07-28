@@ -1585,7 +1585,7 @@ namespace Firefly
             {
                 if (p.ParentHolder is Pawn_CarryTracker carrierTracker)
                     return GetPawnLocation(carrierTracker.pawn);
-                return "unspawned";
+                return "in transit";
             }
             var room = p.Position.GetRoom(p.Map);
             if (room == null || room.IsHuge)
