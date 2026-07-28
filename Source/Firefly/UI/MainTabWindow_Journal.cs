@@ -81,18 +81,21 @@ namespace Firefly
             Widgets.BeginScrollView(rect, ref _navScroll, view);
 
             float y = 0f;
-            if (hasToday)
-                y = NavRow(y, view.width, rowH, NavToday, $"Day {today}", "●", AcToday);
-
             y = NavRow(y, view.width, rowH, NavColony, "Colony", "◆", AcHistory);
 
-            if (past.Count > 0)
+            if (hasToday || past.Count > 0)
             {
                 GUI.color = new Color(1f, 1f, 1f, 0.09f);
                 GUI.DrawTexture(new Rect(6f, y + rowH * 0.45f, view.width - 12f, 1f), BaseContent.WhiteTex);
                 GUI.color = Color.white;
                 y += rowH * 0.8f;
+            }
 
+            if (hasToday)
+                y = NavRow(y, view.width, rowH, NavToday, $"Day {today}", "●", AcToday);
+
+            if (past.Count > 0)
+            {
                 foreach (var rec in past.OrderByDescending(d => d.Day))
                 {
                     bool hasSummary = !rec.Summary.NullOrEmpty();
@@ -234,6 +237,8 @@ namespace Firefly
             if (!statusContent.NullOrEmpty())  secs.Add(("STATUS",  AcStatus,  statusContent));
             if (!combatContent.NullOrEmpty())  secs.Add(("COMBAT",  AcCombat,  combatContent));
             if (!hazardContent.NullOrEmpty())  secs.Add(("HAZARDS", AcHazards, hazardContent));
+            secs.Add(("LLM IN",  new Color(0.65f, 0.55f, 0.80f), record.Timeline ?? ""));
+            secs.Add(("LLM OUT", new Color(0.45f, 0.75f, 0.65f), summaryText));
 
             DrawSectioned(rect, secs, $"day{record.Day}", AcEvents, $"DAY {record.Day}");
         }

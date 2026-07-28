@@ -85,9 +85,9 @@ namespace Firefly
                 if (hourBucket < _lastHourBucket)
                 {
                     int closingDay = _ledger.RecordingDay;
-                    _ledger.Record(map, hourOfDay);
                     _lastHourBucket = hourBucket;
-                    WriteTimeline(map, closingDay);
+                    WriteTimeline(map, closingDay);  // archive + clear first
+                    _ledger.Record(map, hourOfDay);  // then write new day header to fresh buffer
                     return;
                 }
 
