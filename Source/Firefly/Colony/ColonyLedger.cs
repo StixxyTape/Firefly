@@ -585,7 +585,7 @@ namespace Firefly
         // Everything here is in-flight working state. The narrative itself lives in text
         // files on disk; only the buffers that would otherwise be lost on quit ride along
         // inside the save, which is what makes the old pending_events.txt unnecessary.
-        private const char FieldSep = '\u0001';
+        private const char FieldSep = '\t'; // \u0001 is illegal XML 1.0 -- tab is valid and never appears in pawn names or labels
 
         public void ExposeData()
         {
