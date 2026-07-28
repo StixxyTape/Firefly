@@ -742,6 +742,8 @@ namespace Firefly
         private readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
         private readonly StringBuilder _timelineBuffer = new StringBuilder();
 
+        public string OutputDir => _outputDir;
+
         public void SetOutputDir(string dir)
         {
             _outputDir = dir;

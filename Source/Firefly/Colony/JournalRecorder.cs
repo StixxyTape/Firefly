@@ -81,7 +81,6 @@ namespace Firefly
                 {
                     _lastHourBucket = hourBucket;
                     _lastDrainHour = hourOfDay;
-                    _ledger.SetOutputDir(FireflyGameComponent.GetOutputDir());
                     _ledger.Record(map, hourOfDay);
                     return;
                 }
@@ -154,7 +153,8 @@ namespace Firefly
                 if (day == _lastArchivedDay) return;
                 _lastArchivedDay = day;
 
-                string dir = FireflyGameComponent.GetOutputDir();
+                string dir = _ledger.OutputDir;
+                if (dir == null) return;
 
                 // Append health/relations/skills to timeline file before archiving
                 string healthSection = _ledger.BuildComparisonSection(map);

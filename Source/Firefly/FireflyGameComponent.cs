@@ -41,7 +41,10 @@ namespace Firefly
         {
             bool isFillion = Find.Storyteller?.def?.defName == "Fillion";
             Recorder.SetEnabled(isFillion);
-            if (isFillion && Ledger != null) Ledger.SetOutputDir(GetOutputDir());
+            if (isFillion)
+                Ledger.SetOutputDir(GetOutputDir());
+            else
+                Ledger.SetOutputDir(null);
         }
 
         public override void GameComponentTick()
