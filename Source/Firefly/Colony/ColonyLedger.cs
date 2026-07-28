@@ -292,22 +292,39 @@ namespace Firefly
             lock (_timelineBuffer) return _timelineBuffer.ToString();
         }
 
-        // Hourly drain — appends combat and hazard summaries to the live timeline buffer.
+        // Accumulated hourly drain results — flushed once at midnight
+        private readonly List<(long Tick, string Text)> _drainedCombatLines = new List<(long, string)>();
+        private readonly List<(long Tick, string Text)> _drainedHazardLines = new List<(long, string)>();
+
+        // Hourly drain — keeps combat outcome matching working without file writes.
+        // Accumulates results in _drainedCombatLines / _drainedHazardLines until midnight.
         public void DrainToBuffers(float lon)
         {
             var (combatSimple, _) = DrainCombatEvents();
             var hazardSummaries   = DrainHazardEvents();
-            string combatSection  = BuildSectionString("COMBAT",  combatSimple,  lon);
-            string hazardSection  = BuildSectionString("HAZARDS", hazardSummaries, lon);
-            if (!combatSection.NullOrEmpty())  AppendRawToTimeline("\n" + combatSection);
-            if (!hazardSection.NullOrEmpty())  AppendRawToTimeline("\n" + hazardSection);
+            if (combatSimple.Count > 0)
+                lock (_drainedCombatLines) _drainedCombatLines.AddRange(combatSimple);
+            if (hazardSummaries.Count > 0)
+                lock (_drainedHazardLines) _drainedHazardLines.AddRange(hazardSummaries);
         }
 
-        // Called at midnight — final drain (already appended inline), returns empty for compat.
+        // Called at midnight — does one final drain then returns the accumulated content.
         public (string CombatContent, string HazardContent) FlushDrainedSections(float lon)
         {
             DrainToBuffers(lon);
-            return ("", "");
+
+            List<(long, string)> combat, hazard;
+            lock (_drainedCombatLines)
+            {
+                combat = new List<(long, string)>(_drainedCombatLines);
+                _drainedCombatLines.Clear();
+            }
+            lock (_drainedHazardLines)
+            {
+                hazard = new List<(long, string)>(_drainedHazardLines);
+                _drainedHazardLines.Clear();
+            }
+            return (BuildSectionString("COMBAT", combat, lon), BuildSectionString("HAZARDS", hazard, lon));
         }
 
         private static string BuildSectionString(string header, List<(long Tick, string Text)> entries, float lon)
@@ -841,6 +858,8 @@ namespace Firefly
             lock (_trackedPawnIds)   _trackedPawnIds.Clear();
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
+            lock (_drainedCombatLines) _drainedCombatLines.Clear();
+            lock (_drainedHazardLines) _drainedHazardLines.Clear();
         }
 
         // ── Pawn roster / tagging ─────────────────────────────────────────────

@@ -142,9 +142,9 @@ namespace Firefly
                 if (!healthSection.NullOrEmpty())
                     _ledger.AppendRawToTimeline("\n" + healthSection);
 
-                // Final drain of combat/hazard buffers (appended inline to timeline)
+                // Final drain of combat/hazard buffers
                 float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
-                _ledger.FlushDrainedSections(lon);
+                var (combatContent, hazardContent) = _ledger.FlushDrainedSections(lon);
 
                 string rosterSection   = _ledger.BuildPawnRosterSection();
                 string timelineContent = _ledger.GetCurrentDayContent();
@@ -162,14 +162,19 @@ namespace Firefly
                         timelineContent = rosterSection + "\n" + timelineContent;
                 }
 
-                if (timelineContent.NullOrEmpty()) return;
+                string fullContent = string.Concat(
+                    timelineContent,
+                    combatContent.NullOrEmpty() ? "" : "\n" + combatContent,
+                    hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent);
+
+                if (fullContent.NullOrEmpty()) return;
 
                 _lastArchivedDay = day;
 
-                var record = new DailyRecord { Day = day, Timeline = timelineContent };
+                var record = new DailyRecord { Day = day, Timeline = fullContent };
                 _ledger.AddDailyRecord(record);
 
-                SendSummaryRequest(day, timelineContent);
+                SendSummaryRequest(day, fullContent);
                 BackfillMissingSummaries(excludeDay: day);
             }
             catch (Exception e)
