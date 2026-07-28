@@ -54,7 +54,8 @@ namespace Firefly
 
             _tickCounter++;
             if (_tickCounter % StorytellerCheckInterval == 0) RefreshEnabled();
-            if (_tickCounter % TimelineFlushInterval == 0) Ledger.FlushTimelineBuffer();
+            if (_tickCounter % TimelineFlushInterval == 0 && _tickCounter % ContextWriteInterval != 0)
+                Ledger.FlushTimelineBuffer();
             if (_tickCounter % ContextWriteInterval  == 0) Ledger.WriteContextFile();
 
             Recorder.Tick();

@@ -151,10 +151,11 @@ namespace Firefly
 
                 if (day < 0) day = _ledger.RecordingDay;
                 if (day == _lastArchivedDay) return;
-                _lastArchivedDay = day;
 
                 string dir = _ledger.OutputDir;
                 if (dir == null) return;
+
+                _lastArchivedDay = day;
 
                 // Append health/relations/skills to timeline file before archiving
                 string healthSection = _ledger.BuildComparisonSection(map);
