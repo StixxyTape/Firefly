@@ -4,8 +4,6 @@
     <defName>Firefly_Journal</defName>
     <label>journal</label>
     <order>14</order>
-    <iconPath>UI/Icons/MainButtons/Journal</iconPath>
     <tabWindowClass>Firefly.MainTabWindow_Journal</tabWindowClass>
-    <workerClass>MainButtonWorker_ToggleTab</workerClass>
   </MainButtonDef>
 </Defs>
