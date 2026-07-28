@@ -211,6 +211,8 @@ namespace Firefly
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
         private static readonly FieldInfo _recipientField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "recipient");
+        private static readonly FieldInfo _logEntryTicksAbsField =
+            AccessTools.Field(typeof(LogEntry), "ticksAbs");
 
         public void Record(Map map, int hourOfDay)
         {
@@ -944,7 +946,9 @@ namespace Firefly
         {
             // Fire can start again next day, so hazard announcements reset.
             _announcedHazards.Clear();
-            lock (_capturedOutcomes) _capturedOutcomes.Clear();
+            lock (_capturedBattleEvents) _capturedBattleEvents.Clear();
+            lock (_capturedHazardEvents) _capturedHazardEvents.Clear();
+            lock (_capturedOutcomes)     _capturedOutcomes.Clear();
             // _announcedBattles intentionally kept — battle IDs are unique per game, so a
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
 
@@ -1049,8 +1053,15 @@ namespace Firefly
             catch { }
         }
 
-        private static readonly Regex _richTextTag = new Regex(@"<[^>]+>", RegexOptions.Compiled);
-        private static string StripTags(string s) => s == null ? null : _richTextTag.Replace(s, "");
+        private static readonly Regex _richTextTag = new Regex(@"<[^>]+>",                 RegexOptions.Compiled);
+        private static readonly Regex _grammarTag  = new Regex(@"\(\*[^)]+\)|\(\/[^)]+\)", RegexOptions.Compiled);
+        internal static string StripTags(string s)
+        {
+            if (s == null) return null;
+            s = _richTextTag.Replace(s, "");
+            s = _grammarTag.Replace(s, "");
+            return s;
+        }
 
         private static string FirstSentence(string s)
         {
@@ -1676,7 +1687,7 @@ namespace Firefly
                     text = InjectAfterFirst(text, logRecipient.LabelShort, recipientTag);
 
                 long absTick = Find.TickManager.TicksAbs;
-                try { absTick = (long)Traverse.Create(entry).Field("ticksAbs").GetValue<int>(); } catch { }
+                try { if (_logEntryTicksAbsField != null) absTick = (long)(int)_logEntryTicksAbsField.GetValue(entry); } catch { }
 
                 AppendEvent(absTick, text.CapitalizeFirst());
             }

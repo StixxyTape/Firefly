@@ -9,7 +9,7 @@ namespace Firefly
     {
         static void Postfix(IArchivable archivable)
         {
-try { ColonyLedger.Current?.CaptureArchiveEntry(archivable); }
+            try { ColonyLedger.Current?.CaptureArchiveEntry(archivable); }
             catch { }
         }
     }

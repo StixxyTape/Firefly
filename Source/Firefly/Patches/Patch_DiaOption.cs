@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using HarmonyLib;
 using RimWorld;
 using Verse;
@@ -46,7 +45,7 @@ namespace Firefly
                 {
                     var title = titleField.GetValue()?.ToString();
                     if (!title.NullOrEmpty())
-                        return StripTags(title);
+                        return ColonyLedger.StripTags(title);
                 }
 
                 // Fall back to the first sentence of the current node's text
@@ -60,7 +59,7 @@ namespace Firefly
                         int dot = text.IndexOf('.');
                         if (dot > 0 && dot < 80) text = text.Substring(0, dot + 1);
                         else if (text.Length > 80) text = text.Substring(0, 77) + "...";
-                        return StripTags(text.Trim());
+                        return ColonyLedger.StripTags(text.Trim());
                     }
                 }
             }
@@ -68,14 +67,5 @@ namespace Firefly
             return null;
         }
 
-        private static readonly Regex _htmlTags    = new Regex(@"<[^>]+>",          RegexOptions.Compiled);
-        private static readonly Regex _grammarTags = new Regex(@"\(\*[^)]+\)|\(\/[^)]+\)", RegexOptions.Compiled);
-        private static string StripTags(string s)
-        {
-            if (s == null) return null;
-            s = _htmlTags.Replace(s, "");
-            s = _grammarTags.Replace(s, "");
-            return s;
-        }
     }
 }
