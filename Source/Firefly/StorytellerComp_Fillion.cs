@@ -302,6 +302,7 @@ namespace Firefly
                     try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
                     catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary day {day}: {e.Message}"); }
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
+                    ColonyLedger.Current?.InvalidateContextCache();
                     ColonyLedger.Current?.WriteContextFile();
                     if (triggerArc) SendArcSummaryRequest(dir, day);
                 },
@@ -374,6 +375,7 @@ namespace Firefly
                         }
                         catch (Exception e) { Log.Warning($"[Firefly] Failed to write colony history: {e.Message}"); }
                         Log.Message($"[Firefly] Colony history updated through Day {day}");
+                        ColonyLedger.Current?.InvalidateContextCache();
                         ColonyLedger.Current?.WriteContextFile();
                     },
                     onError: err => Log.Warning($"[Firefly] Colony history LLM failed for Day {day}: {err}"));

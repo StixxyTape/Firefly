@@ -892,18 +892,20 @@ namespace Firefly
             }
         }
 
-        public void WriteContextFile()
+        // Cached "colony history + recent days" header — rebuilt only when a new summary or arc lands.
+        private string _contextStaticCache = null;
+
+        public void InvalidateContextCache() => _contextStaticCache = null;
+
+        private string BuildContextStaticSection()
         {
-            if (_outputDir == null) return;
-            FlushTimelineBuffer();
             try
             {
                 string dailyDir = Path.Combine(_outputDir, "daily records");
-                if (!Directory.Exists(dailyDir)) return;
+                if (!Directory.Exists(dailyDir)) return "";
 
                 var sb = new StringBuilder();
 
-                // Colony history (rolling overall summary)
                 string historyPath = Path.Combine(dailyDir, "colony_history.txt");
                 if (File.Exists(historyPath))
                 {
@@ -916,7 +918,6 @@ namespace Firefly
                     }
                 }
 
-                // Daily summaries since the last colony history update
                 int lastArcDay = 0;
                 string lastDayPath = Path.Combine(dailyDir, "colony_history_last_day.txt");
                 if (File.Exists(lastDayPath))
@@ -948,7 +949,22 @@ namespace Firefly
                     }
                 }
 
-                // Current day timeline
+                return sb.ToString();
+            }
+            catch { return ""; }
+        }
+
+        public void WriteContextFile()
+        {
+            if (_outputDir == null) return;
+            FlushTimelineBuffer();
+            try
+            {
+                if (_contextStaticCache == null)
+                    _contextStaticCache = BuildContextStaticSection();
+
+                var sb = new StringBuilder(_contextStaticCache);
+
                 string timelinePath = Path.Combine(_outputDir, CurrentTimelineFile);
                 if (File.Exists(timelinePath))
                 {
