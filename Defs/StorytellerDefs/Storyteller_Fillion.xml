@@ -3,7 +3,6 @@
   <StorytellerDef ParentName="BaseStoryteller">
     <defName>Fillion</defName>
     <label>Fillion</label>
-    <portraitLarge>UI/HeroArt/Storytellers/Fillion</portraitLarge>
     <portraitTiny>UI/HeroArt/Storytellers/FillionTiny</portraitTiny>
     <description>Fillion remembers. He keeps a ledger of every meaningful decision your colony makes and every life you touch. His events aren't random — they're consequences.
 
