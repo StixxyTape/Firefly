@@ -30,9 +30,12 @@ namespace Firefly
                 return;
             }
 
-            var past = ledger.PastDays;
+            var    past         = ledger.PastDays;
+            string todayContent = ledger.GetCurrentDayContent();
+            int    todayDay     = ledger.RecordingDay;
+            bool   showToday    = !todayContent.NullOrEmpty() && !past.Any(d => d.Day == todayDay);
 
-            if (past.Count == 0 && ledger.ColonyHistory.NullOrEmpty())
+            if (past.Count == 0 && ledger.ColonyHistory.NullOrEmpty() && !showToday)
             {
                 Text.Font = GameFont.Medium;
                 Widgets.Label(inRect, "No journal entries yet.\n\nThe journal starts recording once Fillion is your active storyteller.");
@@ -47,25 +50,47 @@ namespace Firefly
 
             Widgets.DrawLineVertical(dividerRect.x, dividerRect.y, dividerRect.height);
 
-            DrawDayList(dayListRect, past);
-            DrawContent(contentRect, ledger, past);
+            DrawDayList(dayListRect, past, showToday, todayDay);
+            DrawContent(contentRect, ledger, past, showToday, todayDay, todayContent);
         }
 
         // ── Left panel: scrollable day list ───────────────────────────────────
 
-        private void DrawDayList(Rect rect, IReadOnlyList<DailyRecord> past)
+        private void DrawDayList(Rect rect, IReadOnlyList<DailyRecord> past, bool showToday, int todayDay)
         {
             float rowH   = 28f;
-            float totalH = past.Count * rowH;
+            int   rows   = past.Count + (showToday ? 1 : 0);
+            float totalH = rows * rowH;
 
             var viewRect = new Rect(0f, 0f, rect.width - 16f, Mathf.Max(totalH, rect.height));
             Widgets.BeginScrollView(rect, ref _dayListScroll, viewRect);
 
+            int row = 0;
+
+            // Today row at the top
+            if (showToday)
+            {
+                var rowRect  = new Rect(0f, row * rowH, viewRect.width, rowH);
+                bool selected = _selectedDay == todayDay;
+                if (selected)          Widgets.DrawHighlightSelected(rowRect);
+                else if (Mouse.IsOver(rowRect)) Widgets.DrawHighlight(rowRect);
+
+                var labelRect  = rowRect.LeftPartPixels(rowRect.width - 18f).ContractedBy(2f);
+                var statusRect = new Rect(rowRect.xMax - 18f, rowRect.y, 16f, rowRect.height);
+                Widgets.Label(labelRect, $"Day {todayDay}");
+                GUI.color = Color.yellow;
+                Widgets.Label(statusRect, " ●");
+                GUI.color = Color.white;
+
+                if (Widgets.ButtonInvisible(rowRect)) _selectedDay = todayDay;
+                row++;
+            }
+
             var sorted = past.OrderByDescending(d => d.Day).ToList();
-            for (int i = 0; i < sorted.Count; i++)
+            for (int i = 0; i < sorted.Count; i++, row++)
             {
                 var   record  = sorted[i];
-                var   rowRect = new Rect(0f, i * rowH, viewRect.width, rowH);
+                var   rowRect = new Rect(0f, row * rowH, viewRect.width, rowH);
                 bool  selected = _selectedDay == record.Day;
 
                 if (selected)
@@ -73,7 +98,6 @@ namespace Firefly
                 else if (Mouse.IsOver(rowRect))
                     Widgets.DrawHighlight(rowRect);
 
-                // Day number + summary status indicator
                 string label    = $"Day {record.Day}";
                 string status   = record.Summary.NullOrEmpty() ? " ·" : " ✓";
                 Color  statusColor = record.Summary.NullOrEmpty() ? Color.gray : new Color(0.4f, 0.9f, 0.4f);
@@ -95,15 +119,14 @@ namespace Firefly
 
         // ── Right panel: content ──────────────────────────────────────────────
 
-        private void DrawContent(Rect rect, ColonyLedger ledger, IReadOnlyList<DailyRecord> past)
+        private void DrawContent(Rect rect, ColonyLedger ledger, IReadOnlyList<DailyRecord> past,
+                                 bool showToday, int todayDay, string todayContent)
         {
             rect = rect.ContractedBy(Padding);
 
-            // Decide what to show: colony history banner + selected day content
             bool showHistory = !ledger.ColonyHistory.NullOrEmpty();
             float historyBlockH = showHistory ? HistoryHeight + Padding : 0f;
 
-            // Colony history at the top
             if (showHistory)
             {
                 var historyLabelRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight);
@@ -115,7 +138,6 @@ namespace Firefly
                 DrawScrollableText(historyBoxRect, ledger.ColonyHistory, ref _historyScroll);
             }
 
-            // Divider
             float afterHistory = rect.y + historyBlockH;
             if (showHistory)
             {
@@ -125,12 +147,26 @@ namespace Firefly
 
             var remaining = new Rect(rect.x, afterHistory, rect.width, rect.yMax - afterHistory);
 
-            // Selected day
+            // Auto-select today if nothing chosen yet and today has content
+            if (_selectedDay < 0)
+            {
+                if (showToday)
+                    _selectedDay = todayDay;
+                else if (past.Count > 0)
+                    _selectedDay = past.Max(d => d.Day);
+            }
+
+            // Today (in progress)
+            if (showToday && _selectedDay == todayDay)
+            {
+                DrawTodayContent(remaining, todayDay, todayContent);
+                return;
+            }
+
             DailyRecord selected = _selectedDay >= 0
                 ? past.FirstOrDefault(d => d.Day == _selectedDay)
                 : null;
 
-            // Auto-select most recent if nothing chosen
             if (selected == null && past.Count > 0)
             {
                 selected = past.OrderByDescending(d => d.Day).First();
@@ -144,6 +180,20 @@ namespace Firefly
             }
 
             DrawSelectedDay(remaining, selected);
+        }
+
+        private void DrawTodayContent(Rect rect, int day, string content)
+        {
+            Text.Font = GameFont.Medium;
+            var headerRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight + 4f);
+            GUI.color = Color.yellow;
+            Widgets.Label(headerRect, $"Day {day}  (in progress)");
+            GUI.color = Color.white;
+            Text.Font = GameFont.Small;
+
+            float y = headerRect.yMax + Padding;
+            var timelineBox = new Rect(rect.x, y, rect.width, rect.yMax - y);
+            DrawScrollableText(timelineBox, content, ref _contentScroll);
         }
 
         private void DrawSelectedDay(Rect rect, DailyRecord record)
