@@ -155,8 +155,6 @@ namespace Firefly
                 string dir = _ledger.OutputDir;
                 if (dir == null) return;
 
-                _lastArchivedDay = day;
-
                 // Append health/relations/skills to timeline file before archiving
                 string healthSection = _ledger.BuildComparisonSection(map);
                 if (!healthSection.NullOrEmpty())
@@ -196,6 +194,7 @@ namespace Firefly
                 string dailyDir = Path.Combine(dir, "daily records");
                 Directory.CreateDirectory(dailyDir);
                 File.WriteAllText(Path.Combine(dailyDir, $"daily_timeline_day{day}.txt"), fullContent, Encoding.UTF8);
+                _lastArchivedDay = day;
 
                 SendSummaryRequest(dailyDir, day, fullContent);
                 BackfillMissingSummaries(dailyDir, excludeDay: day);
