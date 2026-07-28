@@ -280,7 +280,7 @@ namespace Firefly
                 var   first    = g.OrderBy(e => e.HM).First();
                 var   allOpps  = g.SelectMany(e => e.Opps).Distinct().ToList();
                 int   hits     = g.Sum(e => e.Hits);
-                string fate    = g.Select(e => e.Fate).FirstOrDefault(f => !f.NullOrEmpty()) ?? "";
+                string fate    = string.Join(", ", g.Select(e => e.Fate).Where(f => !f.NullOrEmpty()).Distinct());
                 string line    = $"{g.Key} — fought {string.Join(", ", allOpps)}.";
                 var   parts    = new List<string>();
                 if (hits > 0)         parts.Add($"took {hits} hit{(hits == 1 ? "" : "s")}");
