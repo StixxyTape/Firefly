@@ -3,7 +3,8 @@
   <MainButtonDef>
     <defName>Firefly_Journal</defName>
     <label>journal</label>
-    <order>16</order>
+    <order>14</order>
     <tabWindowClass>Firefly.MainTabWindow_Journal</tabWindowClass>
+    <workerClass>Firefly.MainButtonWorker_Journal</workerClass>
   </MainButtonDef>
 </Defs>
