@@ -15,7 +15,7 @@ namespace Firefly
             if (def == MessageTypeDefOf.RejectInput ||
                 def == MessageTypeDefOf.CautionInput ||
                 def == MessageTypeDefOf.SilentInput) return;
-            ColonyLedger.CaptureMessage(msg.text);
+            ColonyLedger.Current?.CaptureMessage(msg.text);
         }
     }
 }

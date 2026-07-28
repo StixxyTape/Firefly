@@ -28,7 +28,7 @@ namespace Firefly
                     ? $"[Response] \"{___text}\""
                     : $"[Response to '{context}'] \"{___text}\"";
 
-                ColonyLedger.CaptureDecision(formatted);
+                ColonyLedger.Current?.CaptureDecision(formatted);
             }
             catch { }
         }

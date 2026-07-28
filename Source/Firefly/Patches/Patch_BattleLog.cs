@@ -80,7 +80,7 @@ namespace Firefly
             string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
                                ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
-            ColonyLedger.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiatorPawn, originalTargetPawn);
+            ColonyLedger.Current?.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiatorPawn, originalTargetPawn);
         }
 
         private static void HandleMelee(LogEntry entry)
@@ -109,7 +109,7 @@ namespace Firefly
             string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
                                ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
-            ColonyLedger.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiator, recipientPawn);
+            ColonyLedger.Current?.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiator, recipientPawn);
         }
 
         private static void HandleDamageTaken(LogEntry entry)
@@ -120,7 +120,7 @@ namespace Firefly
             if (recipientPawn == null || !recipientPawn.IsColonist) return;
             string victim      = recipientPawn.LabelShort ?? "?";
             string hazardLabel = GetHazardLabel(ruleDef);
-            ColonyLedger.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult, recipientPawn);
+            ColonyLedger.Current?.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult, recipientPawn);
         }
 
         private static readonly Regex _pascalCase = new Regex("([A-Z])", RegexOptions.Compiled);
@@ -153,8 +153,8 @@ namespace Firefly
                                ?? t.Field("culpritTargetPart").GetValue<BodyPartRecord>(); } catch { }
 
             string causeStr    = null;
-            string subjectTag  = ColonyLedger.IntroduceTag(subject);
-            string initiatorTag = initiator != null ? ColonyLedger.IntroduceTag(initiator) : "";
+            string subjectTag  = ColonyLedger.Current?.IntroduceTag(subject) ?? "";
+            string initiatorTag = initiator != null ? (ColonyLedger.Current?.IntroduceTag(initiator) ?? "") : "";
             var sb = new System.Text.StringBuilder();
             sb.Append(subject.LabelShort);
             sb.Append(subjectTag);
@@ -167,8 +167,8 @@ namespace Firefly
                 sb.Append($" ({causeStr})");
             }
 
-            ColonyLedger.CaptureStateChange(subject.LabelShort, sb.ToString());
-            ColonyLedger.CaptureOutcome(subject.LabelShort, stateChange, initiator?.LabelShort, causeStr);
+            ColonyLedger.Current?.CaptureStateChange(subject.LabelShort, sb.ToString());
+            ColonyLedger.Current?.CaptureOutcome(subject.LabelShort, stateChange, initiator?.LabelShort, causeStr);
         }
     }
 }
