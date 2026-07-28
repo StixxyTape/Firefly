@@ -8,17 +8,17 @@ namespace Firefly
 {
     public class MainTabWindow_Journal : MainTabWindow
     {
-        private const float DayListWidth    = 180f;
-        private const float SummaryHeight   = 160f;
-        private const float HistoryHeight   = 120f;
-        private const float Padding         = 8f;
+        private const float DayListWidth    = 160f;
+        private const float SummaryHeight   = 120f;
+        private const float HistoryHeight   = 90f;
+        private const float Padding         = 6f;
 
         private int     _selectedDay    = -1;
         private Vector2 _dayListScroll  = Vector2.zero;
         private Vector2 _contentScroll  = Vector2.zero;
         private Vector2 _historyScroll  = Vector2.zero;
 
-        public override Vector2 RequestedTabSize => new Vector2(900f, 620f);
+        public override Vector2 RequestedTabSize => new Vector2(1000f, 430f);
 
         public override void DoWindowContents(Rect inRect)
         {
@@ -37,9 +37,7 @@ namespace Firefly
 
             if (past.Count == 0 && ledger.ColonyHistory.NullOrEmpty() && !showToday)
             {
-                Text.Font = GameFont.Medium;
                 Widgets.Label(inRect, "No journal entries yet.\n\nThe journal starts recording once Fillion is your active storyteller.");
-                Text.Font = GameFont.Small;
                 return;
             }
 
@@ -130,9 +128,9 @@ namespace Firefly
             if (showHistory)
             {
                 var historyLabelRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight);
-                Text.Font = GameFont.Medium;
-                Widgets.Label(historyLabelRect, "Colony History");
-                Text.Font = GameFont.Small;
+                GUI.color = new Color(0.9f, 0.8f, 0.5f);
+                Widgets.Label(historyLabelRect, "COLONY HISTORY");
+                GUI.color = Color.white;
 
                 var historyBoxRect = new Rect(rect.x, rect.y + Text.LineHeight + 2f, rect.width, HistoryHeight - Text.LineHeight - 2f);
                 DrawScrollableText(historyBoxRect, ledger.ColonyHistory, ref _historyScroll);
@@ -184,12 +182,10 @@ namespace Firefly
 
         private void DrawTodayContent(Rect rect, int day, string content)
         {
-            Text.Font = GameFont.Medium;
-            var headerRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight + 4f);
+            var headerRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight + 2f);
             GUI.color = Color.yellow;
-            Widgets.Label(headerRect, $"Day {day}  (in progress)");
+            Widgets.Label(headerRect, $"DAY {day}  (in progress)");
             GUI.color = Color.white;
-            Text.Font = GameFont.Small;
 
             float y = headerRect.yMax + Padding;
             var timelineBox = new Rect(rect.x, y, rect.width, rect.yMax - y);
@@ -199,10 +195,10 @@ namespace Firefly
         private void DrawSelectedDay(Rect rect, DailyRecord record)
         {
             // Header
-            Text.Font = GameFont.Medium;
-            var headerRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight + 4f);
-            Widgets.Label(headerRect, $"Day {record.Day}");
-            Text.Font = GameFont.Small;
+            var headerRect = new Rect(rect.x, rect.y, rect.width, Text.LineHeight + 2f);
+            GUI.color = new Color(0.9f, 0.8f, 0.5f);
+            Widgets.Label(headerRect, $"DAY {record.Day}");
+            GUI.color = Color.white;
             float y = headerRect.yMax + Padding;
 
             bool hasSummary  = !record.Summary.NullOrEmpty();
