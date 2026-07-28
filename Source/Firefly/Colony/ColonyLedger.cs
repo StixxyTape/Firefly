@@ -1114,7 +1114,9 @@ namespace Firefly
                 case "trap spike":         return "hit by a spike trap";
                 case "tornado":            return "struck by a tornado";
                 case "power beam":         return "hit by a power beam";
-                case "unnatural darkness": return "harmed by unnatural darkness";
+                case "unnatural darkness":
+                case "unnat dark":
+                case "unnatural dark":     return "harmed by unnatural darkness";
                 default:                   return $"damaged by {label}";
             }
         }

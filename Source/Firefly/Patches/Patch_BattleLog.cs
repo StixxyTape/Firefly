@@ -167,10 +167,17 @@ namespace Firefly
             var pawns = concerns.OfType<Pawn>().ToList();
             if (pawns.Count == 0) return;
 
+            // GetConcerns() returns [initiator, subject] for state transitions — subject is last.
             Pawn subject = pawns.Last();
 
             var transitionDef = Read<RulePackDef>(TransitionDef, entry);
-            string stateChange = transitionDef == RulePackDefOf.Transition_Downed ? "downed" : "killed";
+            string stateChange;
+            if (transitionDef == RulePackDefOf.Transition_Downed)
+                stateChange = "downed";
+            else if (transitionDef?.defName != null)
+                stateChange = transitionDef.defName.Replace("Transition_", "").ToLower();
+            else
+                stateChange = "killed";
 
             Pawn initiator = Read<Pawn>(TransitionInitiator, entry);
 
