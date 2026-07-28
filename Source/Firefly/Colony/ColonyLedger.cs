@@ -40,15 +40,40 @@ namespace Firefly
     {
         // The ledger belongs to one game. Null when no game is loaded, which makes every
         // capture call from a Harmony patch a safe no-op via `ColonyLedger.Current?.`.
-        public static ColonyLedger Current =>
-            Verse.Current.Game?.GetComponent<FireflyGameComponent>()?.Ledger;
+        // Game.GetComponent<T>() is a linear scan, and the capture patches hit this on every
+        // battle-log, play-log, message and archive entry — so it is cached per Game instance.
+        private static Game _cachedGame;
+        private static ColonyLedger _cachedLedger;
+
+        public static ColonyLedger Current
+        {
+            get
+            {
+                Game game = Verse.Current.Game;
+                if (game == null)
+                {
+                    _cachedGame = null;
+                    _cachedLedger = null;
+                    return null;
+                }
+                if (!ReferenceEquals(game, _cachedGame))
+                {
+                    _cachedGame = game;
+                    _cachedLedger = game.GetComponent<FireflyGameComponent>()?.Ledger;
+                }
+                return _cachedLedger;
+            }
+        }
 
         private int _recordingDay;
         private bool _initialized = false;
         public int RecordingDay => _recordingDay;
 
-        // Battle IDs we've already emitted a [Combat started] event for
+        // Battle IDs we've already emitted a [Combat started] event for. Bounded — one entry per
+        // colonist/enemy pair would otherwise grow all playthrough and ride along in every save.
+        private const int MaxAnnouncedBattles = 4000;
         private HashSet<string> _announcedBattles = new HashSet<string>();
+        private Queue<string> _announcedBattleOrder = new Queue<string>();
         // (victim, hazardLabel) pairs we've announced this day — cleared at midnight so new fires re-announce
         private HashSet<(string, string)> _announcedHazards = new HashSet<(string, string)>();
 
@@ -60,9 +85,11 @@ namespace Firefly
         // Combat events buffered until next drain (damage fields filled synchronously within the same tick)
         private readonly List<CombatEvent> _capturedBattleEvents = new List<CombatEvent>();
         private readonly List<HazardEvent> _capturedHazardEvents = new List<HazardEvent>();
-        // Structured downed/killed outcomes — drained alongside combat events for simple summaries
-        private readonly List<(string Subject, string Outcome, string Initiator, string Cause)> _capturedOutcomes
-            = new List<(string, string, string, string)>();
+        // Structured downed/killed outcomes — drained alongside combat events for simple summaries.
+        // SubjectId and Tick exist so an outcome attaches to the fight it actually belongs to
+        // rather than to any later fight by the same colonist name.
+        private readonly List<(string Subject, string SubjectId, string Outcome, string Initiator, string Cause, long Tick)> _capturedOutcomes
+            = new List<(string, string, string, string, string, long)>();
 
         public void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry, Pawn initiatorPawn = null, Pawn targetPawn = null)
         {
@@ -73,10 +100,8 @@ namespace Firefly
             {
                 try
                 {
-                    var t   = Traverse.Create(entry);
-                    deflected = t.Field("deflected").GetValue<bool>();
-                    var parts = t.Field("damagedParts").GetValue<List<BodyPartRecord>>();
-                    didDamage = parts != null && parts.Count > 0;
+                    if (_deflectedField != null) deflected = (bool)_deflectedField.GetValue(entry);
+                    didDamage = HasDamagedParts(entry);
                 }
                 catch { }
             }
@@ -102,7 +127,7 @@ namespace Firefly
             string colonistId = initiatorIsColonist ? initiatorId : targetId;
             string enemyId    = initiatorIsColonist ? targetId    : initiatorId;
             string pairKey    = !colonistId.NullOrEmpty() && !enemyId.NullOrEmpty() ? $"{colonistId}:{enemyId}" : null;
-            if (!pairKey.NullOrEmpty() && _announcedBattles.Add(pairKey))
+            if (!pairKey.NullOrEmpty() && TryAnnounceBattle(pairKey))
             {
                 string initiatorTag = IntroduceTag(initiatorPawn);
                 string targetTag    = IntroduceTag(targetPawn);
@@ -120,10 +145,33 @@ namespace Firefly
             AppendEvent(Find.TickManager.TicksAbs, text + ".");
         }
 
-        public void CaptureOutcome(string subject, string outcome, string initiator, string cause)
+        public void CaptureOutcome(string subject, string subjectId, string outcome, string initiator, string cause)
         {
             if (!_initialized || subject.NullOrEmpty()) return;
-            lock (_capturedOutcomes) _capturedOutcomes.Add((subject, outcome ?? "", initiator ?? "", cause ?? ""));
+            long tick = 0L;
+            try { tick = Find.TickManager.TicksAbs; } catch { }
+            lock (_capturedOutcomes)
+                _capturedOutcomes.Add((subject, subjectId ?? "", outcome ?? "", initiator ?? "", cause ?? "", tick));
+        }
+
+        private bool TryAnnounceBattle(string pairKey)
+        {
+            if (!_announcedBattles.Add(pairKey)) return false;
+            _announcedBattleOrder.Enqueue(pairKey);
+            while (_announcedBattleOrder.Count > MaxAnnouncedBattles)
+                _announcedBattles.Remove(_announcedBattleOrder.Dequeue());
+            return true;
+        }
+
+        private static readonly FieldInfo _deflectedField =
+            AccessTools.Field(typeof(LogEntry_DamageResult), "deflected");
+        private static readonly FieldInfo _damagedPartsField =
+            AccessTools.Field(typeof(LogEntry_DamageResult), "damagedParts");
+
+        private static bool HasDamagedParts(LogEntry_DamageResult entry)
+        {
+            var parts = _damagedPartsField?.GetValue(entry) as List<BodyPartRecord>;
+            return parts != null && parts.Count > 0;
         }
 
         public void CaptureMessage(string text)
@@ -138,11 +186,7 @@ namespace Firefly
             bool didDamage = false;
             if (entry != null)
             {
-                try
-                {
-                    var parts = Traverse.Create(entry).Field("damagedParts").GetValue<List<BodyPartRecord>>();
-                    didDamage = parts != null && parts.Count > 0;
-                }
+                try { didDamage = HasDamagedParts(entry); }
                 catch { }
             }
             long tick = Find.TickManager.TicksAbs;
@@ -547,7 +591,7 @@ namespace Firefly
 
             var pending   = saving ? EncodePendingEvents() : null;
             var health    = saving ? _prevDayHealth.ToDictionary(kv => kv.Key, kv => kv.Value.Serialize()) : null;
-            var battles   = saving ? _announcedBattles.ToList() : null;
+            var battles   = saving ? _announcedBattleOrder.ToList() : null;
             var hazards   = saving ? _announcedHazards.Select(h => $"{h.Item1}{FieldSep}{h.Item2}").ToList() : null;
             var pawnIds   = saving ? _trackedPawnIds.ToList() : null;
             var pawnLines = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
@@ -574,7 +618,11 @@ namespace Firefly
                 foreach (var kv in health)
                     _prevDayHealth[kv.Key] = PawnHealthSnapshot.Deserialize(kv.Value);
 
-            _announcedBattles = battles != null ? new HashSet<string>(battles) : new HashSet<string>();
+            _announcedBattles = new HashSet<string>();
+            _announcedBattleOrder = new Queue<string>();
+            if (battles != null)
+                foreach (var b in battles)
+                    if (!b.NullOrEmpty()) TryAnnounceBattle(b);
 
             _announcedHazards = new HashSet<(string, string)>();
             if (hazards != null)
@@ -599,18 +647,22 @@ namespace Firefly
             DecodePendingEvents(pending);
         }
 
+        // FieldSep rather than '|' — a pawn nickname or weapon label containing a pipe would
+        // otherwise shift every field after it and corrupt the record on load.
         private List<string> EncodePendingEvents()
         {
             var lines = new List<string>();
             lock (_capturedBattleEvents)
                 foreach (var e in _capturedBattleEvents)
-                    lines.Add($"C|{e.Initiator}|{e.InitiatorId}|{e.Target}|{e.TargetId}|{e.ReachedTarget}|{e.Deflected}|{e.DidDamage}|{e.CoverHit ?? ""}|{e.Weapon ?? ""}|{e.InitiatorIsColonist}|{e.BattleId}|{e.Tick}");
+                    lines.Add(string.Join(FieldSep.ToString(), "C", e.Initiator, e.InitiatorId, e.Target, e.TargetId,
+                        e.ReachedTarget.ToString(), e.Deflected.ToString(), e.DidDamage.ToString(),
+                        e.CoverHit ?? "", e.Weapon ?? "", e.InitiatorIsColonist.ToString(), e.BattleId, e.Tick.ToString()));
             lock (_capturedHazardEvents)
                 foreach (var e in _capturedHazardEvents)
-                    lines.Add($"H|{e.Victim}|{e.HazardLabel}|{e.Tick}|{e.DidDamage}");
+                    lines.Add(string.Join(FieldSep.ToString(), "H", e.Victim, e.HazardLabel, e.Tick.ToString(), e.DidDamage.ToString()));
             lock (_capturedOutcomes)
-                foreach (var (subject, outcome, initiator, cause) in _capturedOutcomes)
-                    lines.Add($"O|{subject}|{outcome}|{initiator}|{cause}");
+                foreach (var (subject, subjectId, outcome, initiator, cause, tick) in _capturedOutcomes)
+                    lines.Add(string.Join(FieldSep.ToString(), "O", subject, subjectId, outcome, initiator, cause, tick.ToString()));
             return lines;
         }
 
@@ -621,13 +673,16 @@ namespace Firefly
             _capturedOutcomes.Clear();
             if (lines == null) return;
 
+            int skipped = 0;
             foreach (var line in lines)
             {
                 if (line.NullOrEmpty()) continue;
-                var p = line.Split('|');
+                // Saves written before the separator change used '|'.
+                var p = line.Split(FieldSep);
+                if (p.Length == 1) p = line.Split('|');
                 try
                 {
-                    if (p[0] == "C" && p.Length >= 13)
+                    if (p[0] == "C" && p.Length >= 13 && long.TryParse(p[12], out long cTick))
                     {
                         _capturedBattleEvents.Add(new CombatEvent
                         {
@@ -642,26 +697,37 @@ namespace Firefly
                             Weapon              = p[9].NullOrEmpty() ? null : p[9],
                             InitiatorIsColonist = p[10] == "True",
                             BattleId            = p[11],
-                            Tick                = long.Parse(p[12]),
+                            Tick                = cTick,
                         });
                     }
-                    else if (p[0] == "H" && p.Length >= 5)
+                    else if (p[0] == "H" && p.Length >= 5 && long.TryParse(p[3], out long hTick))
                     {
                         _capturedHazardEvents.Add(new HazardEvent
                         {
                             Victim      = p[1],
                             HazardLabel = p[2],
-                            Tick        = long.Parse(p[3]),
+                            Tick        = hTick,
                             DidDamage   = p[4] == "True",
                         });
                     }
-                    else if (p[0] == "O" && p.Length >= 5)
+                    else if (p[0] == "O" && p.Length >= 7 && long.TryParse(p[6], out long oTick))
                     {
-                        _capturedOutcomes.Add((p[1], p[2], p[3], p[4]));
+                        _capturedOutcomes.Add((p[1], p[2], p[3], p[4], p[5], oTick));
+                    }
+                    else if (p[0] == "O" && p.Length == 5)
+                    {
+                        // Legacy outcome record: no subject id, no tick.
+                        _capturedOutcomes.Add((p[1], "", p[2], p[3], p[4], 0L));
+                    }
+                    else
+                    {
+                        skipped++;
                     }
                 }
-                catch { }
+                catch { skipped++; }
             }
+
+            if (skipped > 0) Log.Warning($"[Firefly] Skipped {skipped} unreadable in-flight event record(s) on load.");
 
             int total = _capturedBattleEvents.Count + _capturedHazardEvents.Count + _capturedOutcomes.Count;
             if (total > 0) Log.Message($"[Firefly] Restored {total} in-flight events from save.");
@@ -1040,7 +1106,9 @@ namespace Firefly
             }
         }
 
-        private (List<(long Tick, string Text)> Simple, List<string> Detailed) DrainCombatEvents()
+        // includeDetailed guards the per-fight prose. Only the simple summaries are consumed today,
+        // and building the prose costs a full regroup plus name disambiguation on every drain.
+        private (List<(long Tick, string Text)> Simple, List<string> Detailed) DrainCombatEvents(bool includeDetailed = false)
         {
             List<CombatEvent> shots;
             lock (_capturedBattleEvents)
@@ -1049,60 +1117,72 @@ namespace Firefly
                 _capturedBattleEvents.Clear();
             }
 
-            // Bail before draining outcomes — otherwise a downed/killed record with no shots
-            // behind it (fire, a fall) is consumed here and never written anywhere.
-            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>());
-
-            List<(string Subject, string Outcome, string Initiator, string Cause)> outcomes;
+            List<(string Subject, string SubjectId, string Outcome, string Initiator, string Cause, long Tick)> outcomes;
             lock (_capturedOutcomes)
             {
-                outcomes = new List<(string, string, string, string)>(_capturedOutcomes);
+                outcomes = new List<(string, string, string, string, string, long)>(_capturedOutcomes);
                 _capturedOutcomes.Clear();
+            }
+
+            long nowTick = 0L;
+            try { nowTick = Find.TickManager.TicksAbs; } catch { }
+            long keepAfter = nowTick - GenDate.TicksPerHour * 2;
+
+            if (shots.Count == 0)
+            {
+                // A downed/killed record can arrive with no shots behind it (fire, a fall). Hold it
+                // briefly in case its fight lands in the next drain, then drop it — the timeline
+                // already carries it via CaptureStateChange.
+                RebufferOutcomes(outcomes, null, keepAfter);
+                return (new List<(long, string)>(), new List<string>());
             }
 
             var summaries = new List<string>();
 
-            // Canonical info: always (colonistName, otherId, otherDisplayName)
-            (string ColonistName, string OtherId, string OtherName) Info(CombatEvent e) =>
+            // Canonical info: always (colonistName, colonistId, otherId, otherDisplayName)
+            (string ColonistName, string ColonistId, string OtherId, string OtherName) Info(CombatEvent e) =>
                 e.InitiatorIsColonist
-                    ? (e.Initiator, e.TargetId,    e.Target)
-                    : (e.Target,    e.InitiatorId, e.Initiator);
+                    ? (e.Initiator, e.InitiatorId, e.TargetId,    e.Target)
+                    : (e.Target,    e.TargetId,    e.InitiatorId, e.Initiator);
 
-            // Group by identity: same colonist + same other ThingID = same fight
-            var groups = shots.GroupBy(e => { var i = Info(e); return (i.ColonistName, i.OtherId); }).ToList();
-
-            // Count how many distinct IDs share each (colonistName, otherName) display pair
-            var nameCount = groups
-                .GroupBy(g => { var i = Info(g.First()); return (i.ColonistName, i.OtherName); })
-                .ToDictionary(g => g.Key, g => g.Count());
-            var nameCounter = new Dictionary<(string, string), int>();
-
-            foreach (var group in groups)
+            if (includeDetailed)
             {
-                var info     = Info(group.First());
-                string col   = info.ColonistName;
-                string other = info.OtherName;
-                var nameKey  = (col, other);
+                // Group by identity: same colonist + same other ThingID = same fight
+                var groups = shots.GroupBy(e => { var i = Info(e); return (i.ColonistName, i.OtherId); }).ToList();
 
-                // Assign display name: no number if only one, first stays bare, rest get 2/3/...
-                string displayOther;
-                if (nameCount[nameKey] == 1)
+                // Count how many distinct IDs share each (colonistName, otherName) display pair
+                var nameCount = groups
+                    .GroupBy(g => { var i = Info(g.First()); return (i.ColonistName, i.OtherName); })
+                    .ToDictionary(g => g.Key, g => g.Count());
+                var nameCounter = new Dictionary<(string, string), int>();
+
+                foreach (var group in groups)
                 {
-                    displayOther = other;
-                }
-                else
-                {
-                    if (!nameCounter.ContainsKey(nameKey)) nameCounter[nameKey] = 0;
-                    nameCounter[nameKey]++;
-                    int n = nameCounter[nameKey];
-                    displayOther = n == 1 ? other : $"{other} {n}";
-                }
+                    var info     = Info(group.First());
+                    string col   = info.ColonistName;
+                    string other = info.OtherName;
+                    var nameKey  = (col, other);
 
-                var lines = new List<string>();
-                foreach (var wGroup in group.GroupBy(e => (e.Initiator, e.Weapon.NullOrEmpty() ? "(unarmed)" : e.Weapon)))
-                    lines.Add(BuildCombatProse(wGroup.Key.Initiator, wGroup.Key.Initiator == col ? displayOther : col, wGroup.Key.Item2, wGroup.ToList()));
+                    // Assign display name: no number if only one, first stays bare, rest get 2/3/...
+                    string displayOther;
+                    if (nameCount[nameKey] == 1)
+                    {
+                        displayOther = other;
+                    }
+                    else
+                    {
+                        if (!nameCounter.ContainsKey(nameKey)) nameCounter[nameKey] = 0;
+                        nameCounter[nameKey]++;
+                        int n = nameCounter[nameKey];
+                        displayOther = n == 1 ? other : $"{other} {n}";
+                    }
 
-                summaries.Add($"{col} vs {displayOther}:\n" + string.Join("\n", lines.Select(l => "  " + l)));
+                    var lines = new List<string>();
+                    foreach (var wGroup in group.GroupBy(e => (e.Initiator, e.Weapon.NullOrEmpty() ? "(unarmed)" : e.Weapon)))
+                        lines.Add(BuildCombatProse(wGroup.Key.Initiator, wGroup.Key.Initiator == col ? displayOther : col, wGroup.Key.Item2, wGroup.ToList()));
+
+                    summaries.Add($"{col} vs {displayOther}:\n" + string.Join("\n", lines.Select(l => "  " + l)));
+                }
             }
 
             // Simple per-colonist summaries for LLM output
@@ -1110,6 +1190,8 @@ namespace Firefly
             var opponentsByColonist = new Dictionary<string, Dictionary<string, string>>(); // col -> {otherId -> otherName}
             var hitsReceived        = new Dictionary<string, int>();
             var firstTickByColonist = new Dictionary<string, long>();
+            var lastTickByColonist  = new Dictionary<string, long>();
+            var idByColonist        = new Dictionary<string, string>();
 
             foreach (var e in shots)
             {
@@ -1118,12 +1200,18 @@ namespace Firefly
                     opponentsByColonist[info.ColonistName] = new Dictionary<string, string>();
                 opponentsByColonist[info.ColonistName][info.OtherId] = info.OtherName;
 
+                if (!info.ColonistId.NullOrEmpty()) idByColonist[info.ColonistName] = info.ColonistId;
+
                 if (!firstTickByColonist.TryGetValue(info.ColonistName, out long earliest) || e.Tick < earliest)
                     firstTickByColonist[info.ColonistName] = e.Tick;
+                if (!lastTickByColonist.TryGetValue(info.ColonistName, out long latest) || e.Tick > latest)
+                    lastTickByColonist[info.ColonistName] = e.Tick;
 
                 if (!e.InitiatorIsColonist && e.ReachedTarget && e.DidDamage)
                     hitsReceived[info.ColonistName] = (hitsReceived.TryGetValue(info.ColonistName, out int n) ? n : 0) + 1;
             }
+
+            var used = new bool[outcomes.Count];
 
             foreach (var kvp in opponentsByColonist)
             {
@@ -1132,13 +1220,19 @@ namespace Firefly
                 var    sb2      = new StringBuilder();
                 sb2.Append($"{col} — fought {JoinList(oppNames)}.");
 
-
                 hitsReceived.TryGetValue(col, out int hits);
-                var fate = outcomes.FirstOrDefault(o => o.Subject == col);
+                long tick      = firstTickByColonist.TryGetValue(col, out long ft) ? ft : 0L;
+                long lastTick  = lastTickByColonist.TryGetValue(col, out long lt) ? lt : tick;
+                idByColonist.TryGetValue(col, out string colId);
+
+                int fateIdx = FindOutcomeForFight(outcomes, used, col, colId, tick, lastTick);
+
                 var personalParts = new List<string>();
                 if (hits > 0) personalParts.Add($"took {hits} hit{(hits == 1 ? "" : "s")}");
-                if (fate.Subject != null)
+                if (fateIdx >= 0)
                 {
+                    used[fateIdx] = true;
+                    var fate = outcomes[fateIdx];
                     var fateParts = new List<string>();
                     if (!fate.Cause.NullOrEmpty())     fateParts.Add(fate.Cause);
                     if (!fate.Initiator.NullOrEmpty()) fateParts.Add(fate.Initiator);
@@ -1147,11 +1241,50 @@ namespace Firefly
                 }
                 if (personalParts.Any()) sb2.Append($" {string.Join(", ", personalParts)}.");
 
-                long tick = firstTickByColonist.TryGetValue(col, out long ft) ? ft : 0L;
                 simple.Add((tick, sb2.ToString()));
             }
 
+            RebufferOutcomes(outcomes, used, keepAfter);
+
             return (simple, summaries);
+        }
+
+        // An outcome belongs to a fight only if it concerns the same colonist and landed inside the
+        // fight's window. Legacy records carry no tick (0) and fall back to name matching.
+        private static int FindOutcomeForFight(
+            List<(string Subject, string SubjectId, string Outcome, string Initiator, string Cause, long Tick)> outcomes,
+            bool[] used, string colonistName, string colonistId, long firstTick, long lastTick)
+        {
+            long grace = GenDate.TicksPerHour;
+            for (int i = 0; i < outcomes.Count; i++)
+            {
+                if (used[i]) continue;
+                var o = outcomes[i];
+
+                bool sameSubject = !o.SubjectId.NullOrEmpty() && !colonistId.NullOrEmpty()
+                    ? o.SubjectId == colonistId
+                    : o.Subject == colonistName;
+                if (!sameSubject) continue;
+
+                if (o.Tick != 0L && (o.Tick < firstTick - grace || o.Tick > lastTick + grace)) continue;
+                return i;
+            }
+            return -1;
+        }
+
+        private void RebufferOutcomes(
+            List<(string Subject, string SubjectId, string Outcome, string Initiator, string Cause, long Tick)> outcomes,
+            bool[] used, long keepAfter)
+        {
+            var keep = new List<(string, string, string, string, string, long)>();
+            for (int i = 0; i < outcomes.Count; i++)
+            {
+                if (used != null && used[i]) continue;
+                if (outcomes[i].Tick < keepAfter) continue;
+                keep.Add(outcomes[i]);
+            }
+            if (keep.Count == 0) return;
+            lock (_capturedOutcomes) _capturedOutcomes.InsertRange(0, keep);
         }
 
         private static string BuildCombatProse(string initiator, string target, string weapon, List<CombatEvent> attacks)

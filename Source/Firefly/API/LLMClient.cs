@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -26,12 +27,24 @@ namespace Firefly
     {
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
+        static LLMClient()
+        {
+            // RimWorld's Mono runtime negotiates an older TLS version by default on some platforms,
+            // which most providers reject with an opaque handshake error.
+            try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; }
+            catch (Exception e) { Log.Warning($"[Firefly] Could not enable TLS 1.2: {e.Message}"); }
+        }
+
         public static void Send(
             string systemPrompt,
             string userPrompt,
             Action<string> onSuccess,
             Action<string> onError)
         {
+            // Single choke point for every narrative request — max_tokens caps the reply, not the
+            // prompt, and a raid-heavy day produces a log far larger than most context windows.
+            userPrompt = TruncateForPrompt(userPrompt, FireflyMod.Settings.MaxPromptChars);
+
             var messages = new List<ChatMessage>
             {
                 new ChatMessage("system", systemPrompt),
@@ -53,6 +66,23 @@ namespace Firefly
             ));
         }
 
+        // Keeps the head (day header, character roster) and the tail (latest events, health
+        // section) — the two ends that carry the most narrative weight.
+        public static string TruncateForPrompt(string text, int maxChars)
+        {
+            if (text == null || maxChars <= 0 || text.Length <= maxChars) return text;
+
+            const string marker = "\n\n[... middle of the day's log omitted to fit the context window ...]\n\n";
+            int budget = maxChars - marker.Length;
+            if (budget <= 0) return text.Substring(0, maxChars);
+
+            int head = (int)(budget * 0.4f);
+            int tail = budget - head;
+            string result = text.Substring(0, head) + marker + text.Substring(text.Length - tail);
+            Log.Message($"[Firefly] Prompt truncated {text.Length} → {result.Length} chars (limit {maxChars}).");
+            return result;
+        }
+
         private static async Task SendAsync(
             List<ChatMessage> messages,
             Action<string> onSuccess,
@@ -62,7 +92,7 @@ namespace Firefly
 
             if (settings.ApiKey.NullOrEmpty())
             {
-                LongEventHandler.ExecuteWhenFinished(() => onError("No API key set — configure one in Mod Settings."));
+                MainThreadQueue.Enqueue(() => onError("No API key set — configure one in Mod Settings."));
                 return;
             }
 
@@ -118,7 +148,7 @@ namespace Firefly
                         continue;
                     }
 
-                    LongEventHandler.ExecuteWhenFinished(() => onSuccess(content));
+                    MainThreadQueue.Enqueue(() => onSuccess(content));
                     return;
                 }
                 catch (TaskCanceledException)
@@ -133,7 +163,7 @@ namespace Firefly
                 }
             }
 
-            LongEventHandler.ExecuteWhenFinished(() => onError($"Request failed. Last error: {lastError}"));
+            MainThreadQueue.Enqueue(() => onError($"Request failed. Last error: {lastError}"));
         }
     }
 }

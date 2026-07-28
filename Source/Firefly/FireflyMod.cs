@@ -37,6 +37,10 @@ namespace Firefly
 
         public override void DoSettingsWindowContents(Rect inRect)
         {
+            // Test Connection can be used with no game loaded, where GameComponentTick never runs,
+            // so the queue is also drained here while this window is open.
+            MainThreadQueue.Drain();
+
             var listing = new Listing_Standard();
             listing.Begin(inRect);
 
@@ -136,8 +140,15 @@ namespace Firefly
 
             listing.Gap(18f);
             listing.GapLine();
-            listing.Label("Narrative Prompt  (optional)");
-            listing.Label("Replaces the built-in prompt entirely. Leave blank to use the default.");
+            listing.Label($"Prompt size limit: {Settings.MaxPromptChars:N0} characters");
+            listing.Label("A busy day's log is trimmed to this before being sent. Lower it if your model rejects long prompts or costs add up.");
+            Settings.MaxPromptChars = Mathf.RoundToInt(
+                listing.Slider(Settings.MaxPromptChars, 4000f, 120000f) / 1000f) * 1000;
+
+            listing.Gap(18f);
+            listing.GapLine();
+            listing.Label("Daily Summary Prompt  (optional)");
+            listing.Label("Replaces the built-in daily summary prompt. The colony history prompt is not affected. Leave blank to use the default.");
             var promptRect = listing.GetRect(90f);
             Settings.CustomPrompt = Widgets.TextArea(promptRect, Settings.CustomPrompt ?? "");
 

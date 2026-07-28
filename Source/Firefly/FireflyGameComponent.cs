@@ -6,25 +6,29 @@ using Verse;
 
 namespace Firefly
 {
-    // Owns the ledger for exactly one game. RimWorld builds one of these per loaded save and
-    // discards it on unload, so ledger state can no longer leak from one colony into the next.
+    // Owns the ledger and the journal recorder for exactly one game. RimWorld builds one of these
+    // per loaded save and discards it on unload, so no state can leak from one colony into the next.
     public class FireflyGameComponent : GameComponent
     {
-        private const int TimelineFlushInterval = 300;
-        private const int ContextWriteInterval  = 2000;
+        private const int TimelineFlushInterval  = 300;
+        private const int ContextWriteInterval   = 2000;
+        private const int StorytellerCheckInterval = 2000;
 
         public ColonyLedger Ledger = new ColonyLedger();
+        public JournalRecorder Recorder;
 
         private int _tickCounter;
 
-        public FireflyGameComponent(Game game) { }
+        public FireflyGameComponent(Game game)
+        {
+            Recorder = new JournalRecorder(Ledger);
+        }
 
         public override void FinalizeInit()
         {
             try
             {
-                if (Find.Storyteller?.def?.defName != "Fillion") return;
-                Ledger.SetOutputDir(GetOutputDir());
+                RefreshEnabled();
             }
             catch (Exception e)
             {
@@ -32,11 +36,25 @@ namespace Firefly
             }
         }
 
+        // Re-checked periodically because the storyteller can be swapped mid-game.
+        private void RefreshEnabled()
+        {
+            bool isFillion = Find.Storyteller?.def?.defName == "Fillion";
+            Recorder.SetEnabled(isFillion);
+            if (isFillion && Ledger != null) Ledger.SetOutputDir(GetOutputDir());
+        }
+
         public override void GameComponentTick()
         {
+            // HTTP callbacks are queued off-thread and executed here on the main thread.
+            MainThreadQueue.Drain();
+
             _tickCounter++;
+            if (_tickCounter % StorytellerCheckInterval == 0) RefreshEnabled();
             if (_tickCounter % TimelineFlushInterval == 0) Ledger.FlushTimelineBuffer();
             if (_tickCounter % ContextWriteInterval  == 0) Ledger.WriteContextFile();
+
+            Recorder.Tick();
         }
 
         public override void ExposeData()
@@ -44,6 +62,7 @@ namespace Firefly
             base.ExposeData();
             if (Scribe.mode == LoadSaveMode.Saving) Ledger.FlushTimelineBuffer();
             Ledger.ExposeData();
+            Recorder.ExposeData();
         }
 
         public static string GetOutputDir()

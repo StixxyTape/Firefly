@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using HarmonyLib;
 using RimWorld;
@@ -10,6 +11,40 @@ namespace Firefly
     [HarmonyPatch(typeof(BattleLog), nameof(BattleLog.Add))]
     public static class Patch_BattleLog_Add
     {
+        // BattleLog.Add fires hundreds of times a second during a raid, so every field read here is
+        // a cached FieldInfo rather than a fresh Traverse. AccessTools walks base types, so looking
+        // a shared field up from the most-derived type is safe.
+        private static readonly FieldInfo RangedInitiatorPawn      = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "initiatorPawn");
+        private static readonly FieldInfo RangedOriginalTargetPawn = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "originalTargetPawn");
+        private static readonly FieldInfo RangedOriginalTargetThing = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "originalTargetThing");
+        private static readonly FieldInfo RangedRecipientPawn      = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "recipientPawn");
+        private static readonly FieldInfo RangedRecipientThing     = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "recipientThing");
+        private static readonly FieldInfo RangedWeaponDef          = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "weaponDef");
+        private static readonly FieldInfo RangedBattle             = AccessTools.Field(typeof(BattleLogEntry_RangedImpact), "battle");
+
+        private static readonly FieldInfo MeleeInitiator      = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "initiator");
+        private static readonly FieldInfo MeleeRecipientPawn  = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "recipientPawn");
+        private static readonly FieldInfo MeleeOwnerEquipment = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "ownerEquipmentDef");
+        private static readonly FieldInfo MeleeToolLabel      = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "toolLabel");
+        private static readonly FieldInfo MeleeRuleDef        = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "ruleDef");
+        private static readonly FieldInfo MeleeBattle         = AccessTools.Field(typeof(BattleLogEntry_MeleeCombat), "battle");
+
+        private static readonly FieldInfo DamageTakenRecipientPawn = AccessTools.Field(typeof(BattleLogEntry_DamageTaken), "recipientPawn");
+        private static readonly FieldInfo DamageTakenRuleDef       = AccessTools.Field(typeof(BattleLogEntry_DamageTaken), "ruleDef");
+
+        private static readonly FieldInfo TransitionDef        = AccessTools.Field(typeof(BattleLogEntry_StateTransition), "transitionDef");
+        private static readonly FieldInfo TransitionInitiator  = AccessTools.Field(typeof(BattleLogEntry_StateTransition), "initiator");
+        private static readonly FieldInfo TransitionCulpritHediff = AccessTools.Field(typeof(BattleLogEntry_StateTransition), "culpritHediffDef");
+        private static readonly FieldInfo TransitionCulpritPart   = AccessTools.Field(typeof(BattleLogEntry_StateTransition), "culpritHediffTargetPart");
+        private static readonly FieldInfo TransitionCulpritPartAlt = AccessTools.Field(typeof(BattleLogEntry_StateTransition), "culpritTargetPart");
+
+        private static T Read<T>(FieldInfo field, object target) where T : class
+        {
+            if (field == null || target == null) return null;
+            try { return field.GetValue(target) as T; }
+            catch { return null; }
+        }
+
         static void Postfix(LogEntry entry)
         {
             try
@@ -50,14 +85,12 @@ namespace Firefly
 
         private static void HandleRangedImpact(LogEntry entry)
         {
-            var t = Traverse.Create(entry);
-
-            Pawn     initiatorPawn      = t.Field("initiatorPawn").GetValue<Pawn>();
-            Pawn     originalTargetPawn = t.Field("originalTargetPawn").GetValue<Pawn>();
-            Thing    originalTargetThing = t.Field("originalTargetThing").GetValue<Thing>();
-            Pawn     recipientPawn      = t.Field("recipientPawn").GetValue<Pawn>();
-            Thing    recipientThing     = t.Field("recipientThing").GetValue<Thing>();
-            ThingDef weaponDef          = t.Field("weaponDef").GetValue<ThingDef>();
+            Pawn     initiatorPawn       = Read<Pawn>(RangedInitiatorPawn, entry);
+            Pawn     originalTargetPawn  = Read<Pawn>(RangedOriginalTargetPawn, entry);
+            Thing    originalTargetThing = Read<Thing>(RangedOriginalTargetThing, entry);
+            Pawn     recipientPawn       = Read<Pawn>(RangedRecipientPawn, entry);
+            Thing    recipientThing      = Read<Thing>(RangedRecipientThing, entry);
+            ThingDef weaponDef           = Read<ThingDef>(RangedWeaponDef, entry);
 
             string initiator   = initiatorPawn?.LabelShort ?? "?";
             string initiatorId = initiatorPawn?.ThingID    ?? initiator;
@@ -77,7 +110,7 @@ namespace Firefly
             }
 
             var colonistPawn = initiatorIsColonist ? initiatorPawn : originalTargetPawn;
-            string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
+            string battleId  = Read<Battle>(RangedBattle, entry)?.GetUniqueLoadID()
                                ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
             ColonyLedger.Current?.CaptureBattleEvent(initiator, initiatorId, target, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiatorPawn, originalTargetPawn);
@@ -85,13 +118,11 @@ namespace Firefly
 
         private static void HandleMelee(LogEntry entry)
         {
-            var t = Traverse.Create(entry);
-
-            Pawn          initiator      = t.Field("initiator").GetValue<Pawn>();
-            Pawn          recipientPawn  = t.Field("recipientPawn").GetValue<Pawn>();
-            ThingDef      ownerEquipment = t.Field("ownerEquipmentDef").GetValue<ThingDef>();
-            string        toolLabel      = t.Field("toolLabel").GetValue<string>();
-            RulePackDef   ruleDef        = t.Field("ruleDef").GetValue<RulePackDef>();
+            Pawn        initiator      = Read<Pawn>(MeleeInitiator, entry);
+            Pawn        recipientPawn  = Read<Pawn>(MeleeRecipientPawn, entry);
+            ThingDef    ownerEquipment = Read<ThingDef>(MeleeOwnerEquipment, entry);
+            string      toolLabel      = Read<string>(MeleeToolLabel, entry);
+            RulePackDef ruleDef        = Read<RulePackDef>(MeleeRuleDef, entry);
 
             string initiatorName = initiator?.LabelShort ?? "?";
             string initiatorId   = initiator?.ThingID    ?? initiatorName;
@@ -106,7 +137,7 @@ namespace Firefly
             string coverHit          = ruleDefName.Contains("Dodge") ? $"{targetName} dodging" : null;
 
             var colonistPawn = initiatorIsColonist ? initiator : recipientPawn;
-            string battleId  = Traverse.Create(entry).Field("battle").GetValue<Battle>()?.GetUniqueLoadID()
+            string battleId  = Read<Battle>(MeleeBattle, entry)?.GetUniqueLoadID()
                                ?? colonistPawn?.records?.BattleActive?.GetUniqueLoadID();
 
             ColonyLedger.Current?.CaptureBattleEvent(initiatorName, initiatorId, targetName, targetId, reachedTarget, weapon, coverHit, initiatorIsColonist, battleId, entry as LogEntry_DamageResult, initiator, recipientPawn);
@@ -114,9 +145,8 @@ namespace Firefly
 
         private static void HandleDamageTaken(LogEntry entry)
         {
-            var t = Traverse.Create(entry);
-            Pawn        recipientPawn = t.Field("recipientPawn").GetValue<Pawn>();
-            RulePackDef ruleDef       = t.Field("ruleDef").GetValue<RulePackDef>();
+            Pawn        recipientPawn = Read<Pawn>(DamageTakenRecipientPawn, entry);
+            RulePackDef ruleDef       = Read<RulePackDef>(DamageTakenRuleDef, entry);
             if (recipientPawn == null || !recipientPawn.IsColonist) return;
             string victim      = recipientPawn.LabelShort ?? "?";
             string hazardLabel = GetHazardLabel(ruleDef);
@@ -138,23 +168,22 @@ namespace Firefly
             if (pawns.Count == 0) return;
 
             Pawn subject = pawns.Last();
-            var t = Traverse.Create(entry);
 
-            var transitionDef = t.Field("transitionDef").GetValue<RulePackDef>();
+            var transitionDef = Read<RulePackDef>(TransitionDef, entry);
             string stateChange = transitionDef == RulePackDefOf.Transition_Downed ? "downed" : "killed";
 
-            Pawn initiator = null;
-            try { initiator = t.Field("initiator").GetValue<Pawn>(); } catch { }
+            Pawn initiator = Read<Pawn>(TransitionInitiator, entry);
 
-            HediffDef culpritHediff = null;
-            BodyPartRecord culpritPart = null;
-            try { culpritHediff = t.Field("culpritHediffDef").GetValue<HediffDef>(); } catch { }
-            try { culpritPart   = t.Field("culpritHediffTargetPart").GetValue<BodyPartRecord>()
-                               ?? t.Field("culpritTargetPart").GetValue<BodyPartRecord>(); } catch { }
+            HediffDef culpritHediff = Read<HediffDef>(TransitionCulpritHediff, entry);
+            BodyPartRecord culpritPart = Read<BodyPartRecord>(TransitionCulpritPart, entry)
+                                      ?? Read<BodyPartRecord>(TransitionCulpritPartAlt, entry);
 
-            string causeStr    = null;
-            string subjectTag  = ColonyLedger.Current?.IntroduceTag(subject) ?? "";
-            string initiatorTag = initiator != null ? (ColonyLedger.Current?.IntroduceTag(initiator) ?? "") : "";
+            var ledger = ColonyLedger.Current;
+            if (ledger == null) return;
+
+            string causeStr     = null;
+            string subjectTag   = ledger.IntroduceTag(subject);
+            string initiatorTag = initiator != null ? ledger.IntroduceTag(initiator) : "";
             var sb = new System.Text.StringBuilder();
             sb.Append(subject.LabelShort);
             sb.Append(subjectTag);
@@ -167,8 +196,8 @@ namespace Firefly
                 sb.Append($" ({causeStr})");
             }
 
-            ColonyLedger.Current?.CaptureStateChange(subject.LabelShort, sb.ToString());
-            ColonyLedger.Current?.CaptureOutcome(subject.LabelShort, stateChange, initiator?.LabelShort, causeStr);
+            ledger.CaptureStateChange(subject.LabelShort, sb.ToString());
+            ledger.CaptureOutcome(subject.LabelShort, subject.ThingID, stateChange, initiator?.LabelShort, causeStr);
         }
     }
 }
