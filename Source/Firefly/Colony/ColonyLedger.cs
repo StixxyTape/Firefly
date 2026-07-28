@@ -341,6 +341,30 @@ namespace Firefly
             return sb.ToString();
         }
 
+        // Read-only peek at today's accumulated combat/hazard for the journal UI.
+        public string GetCurrentCombatContent(float lon)
+        {
+            lock (_drainedCombatLines) return PeekDrainedLines(_drainedCombatLines, lon);
+        }
+
+        public string GetCurrentHazardContent(float lon)
+        {
+            lock (_drainedHazardLines) return PeekDrainedLines(_drainedHazardLines, lon);
+        }
+
+        private static string PeekDrainedLines(List<(long Tick, string Text)> lines, float lon)
+        {
+            if (lines.Count == 0) return "";
+            var sb = new StringBuilder();
+            foreach (var (tick, text) in lines.OrderBy(e => e.Tick))
+            {
+                int hr  = GenDate.HourInteger(tick, lon);
+                int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+                sb.AppendLine($"  - [{hr:D2}:{min:D2}] {text}");
+            }
+            return sb.ToString();
+        }
+
         // ── Past-day management ───────────────────────────────────────────────
 
         public void AddDailyRecord(DailyRecord record) => _pastDays.Add(record);
