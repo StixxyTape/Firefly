@@ -36,33 +36,35 @@ namespace Firefly
         public bool   DidDamage;           // resolved at capture time from Entry
     }
 
-    internal static class ColonyLedger
+    public class ColonyLedger
     {
-        private static readonly List<(long Tick, string Text)> _timeline        = new List<(long, string)>();
+        // The ledger belongs to one game. Null when no game is loaded, which makes every
+        // capture call from a Harmony patch a safe no-op via `ColonyLedger.Current?.`.
+        public static ColonyLedger Current =>
+            Verse.Current.Game?.GetComponent<FireflyGameComponent>()?.Ledger;
 
-        private static int _recordingDay;
-        private static bool _initialized = false;
-        public static int RecordingDay => _recordingDay;
+        private int _recordingDay;
+        private bool _initialized = false;
+        public int RecordingDay => _recordingDay;
 
-        // Battle IDs we've already emitted a [Combat started] event for — never cleared (IDs are unique per session)
-        private static readonly HashSet<string> _announcedBattles = new HashSet<string>();
+        // Battle IDs we've already emitted a [Combat started] event for
+        private HashSet<string> _announcedBattles = new HashSet<string>();
         // (victim, hazardLabel) pairs we've announced this day — cleared at midnight so new fires re-announce
-        private static readonly HashSet<(string, string)> _announcedHazards = new HashSet<(string, string)>();
+        private HashSet<(string, string)> _announcedHazards = new HashSet<(string, string)>();
 
-        // Persisted comparisons — loaded from disk at start, saved at midnight
-        private static Dictionary<string, PawnHealthSnapshot> _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
-        private static Dictionary<string, string> _prevDayRelations  = new Dictionary<string, string>();
-        private static Dictionary<string, string> _prevDaySkills     = new Dictionary<string, string>();
-        private static bool _prevComparisonsLoaded = false;
+        // Yesterday's baselines — saved inside the .rws so rewinding a save rewinds these too
+        private Dictionary<string, PawnHealthSnapshot> _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
+        private Dictionary<string, string> _prevDayRelations  = new Dictionary<string, string>();
+        private Dictionary<string, string> _prevDaySkills     = new Dictionary<string, string>();
 
         // Combat events buffered until next drain (damage fields filled synchronously within the same tick)
-        private static readonly List<CombatEvent> _capturedBattleEvents = new List<CombatEvent>();
-        private static readonly List<HazardEvent> _capturedHazardEvents = new List<HazardEvent>();
+        private readonly List<CombatEvent> _capturedBattleEvents = new List<CombatEvent>();
+        private readonly List<HazardEvent> _capturedHazardEvents = new List<HazardEvent>();
         // Structured downed/killed outcomes — drained alongside combat events for simple summaries
-        private static readonly List<(string Subject, string Outcome, string Initiator, string Cause)> _capturedOutcomes
+        private readonly List<(string Subject, string Outcome, string Initiator, string Cause)> _capturedOutcomes
             = new List<(string, string, string, string)>();
 
-        public static void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry, Pawn initiatorPawn = null, Pawn targetPawn = null)
+        public void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry, Pawn initiatorPawn = null, Pawn targetPawn = null)
         {
             if (!_initialized) return;
             bool didDamage = false;
@@ -112,25 +114,25 @@ namespace Firefly
             }
         }
 
-        public static void CaptureStateChange(string targetName, string text)
+        public void CaptureStateChange(string targetName, string text)
         {
             if (!_initialized || targetName.NullOrEmpty()) return;
             AppendEvent(Find.TickManager.TicksAbs, text + ".");
         }
 
-        public static void CaptureOutcome(string subject, string outcome, string initiator, string cause)
+        public void CaptureOutcome(string subject, string outcome, string initiator, string cause)
         {
             if (!_initialized || subject.NullOrEmpty()) return;
             lock (_capturedOutcomes) _capturedOutcomes.Add((subject, outcome ?? "", initiator ?? "", cause ?? ""));
         }
 
-        public static void CaptureMessage(string text)
+        public void CaptureMessage(string text)
         {
             if (!_initialized || text.NullOrEmpty()) return;
             AppendEvent(Find.TickManager.TicksAbs, StripTags(text));
         }
 
-        public static void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry, Pawn victimPawn = null)
+        public void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry, Pawn victimPawn = null)
         {
             if (!_initialized) return;
             bool didDamage = false;
@@ -155,7 +157,7 @@ namespace Firefly
         }
 
         // Caller provides the fully-formatted string including prefix
-        public static void CaptureDecision(string formattedText)
+        public void CaptureDecision(string formattedText)
         {
             if (!_initialized || formattedText.NullOrEmpty()) return;
             AppendEvent(Find.TickManager.TicksAbs, StripTags(formattedText));
@@ -166,7 +168,7 @@ namespace Firefly
         private static readonly FieldInfo _recipientField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "recipient");
 
-        public static void Record(Map map, int hourOfDay)
+        public void Record(Map map, int hourOfDay)
         {
             if (!_initialized)
             {
@@ -209,7 +211,7 @@ namespace Firefly
         }
 
         // Called at midnight before sending to LLM — captures health + relations once per day
-        public static string BuildComparisonSection(Map map)
+        public string BuildComparisonSection(Map map)
         {
             var colonists = map.mapPawns?.FreeColonists?.ToList();
             if (colonists == null || colonists.Count == 0) return "";
@@ -333,7 +335,7 @@ namespace Firefly
             return snapshot;
         }
 
-        private static string BuildRelationChanges(Dictionary<string, string> current)
+        private string BuildRelationChanges(Dictionary<string, string> current)
         {
             if (_prevDayRelations.Count == 0) return "";
 
@@ -418,7 +420,7 @@ namespace Firefly
             return snapshot;
         }
 
-        private static string BuildSkillChanges(Dictionary<string, string> current)
+        private string BuildSkillChanges(Dictionary<string, string> current)
         {
             if (_prevDaySkills.Count == 0) return "";
 
@@ -501,16 +503,13 @@ namespace Firefly
             thoughts  = parts.Length > 3 ? parts[3] : "";
         }
 
-        public static void TryLoadPrevDayComparisons(string filePath)
+        // One-time migration for colonies saved before comparisons moved into the .rws file.
+        private void TryLoadLegacyComparisons(string filePath)
         {
-            if (_prevComparisonsLoaded) return;
-            _prevComparisonsLoaded = true;
+            if (_prevDayHealth.Count > 0 || _prevDayRelations.Count > 0 || _prevDaySkills.Count > 0) return;
             try
             {
                 if (!File.Exists(filePath)) return;
-                _prevDayHealth.Clear();
-                _prevDayRelations.Clear();
-                _prevDaySkills.Clear();
                 string section = "";
                 foreach (var line in File.ReadAllLines(filePath, Encoding.UTF8))
                 {
@@ -528,47 +527,162 @@ namespace Firefly
                         case "skills":    _prevDaySkills[key]    = val; break;
                     }
                 }
-                Log.Message($"[Firefly] Loaded previous day comparisons ({_prevDayHealth.Count} health, {_prevDayRelations.Count} relation, {_prevDaySkills.Count} skill entries).");
+                Log.Message($"[Firefly] Migrated legacy comparisons ({_prevDayHealth.Count} health, {_prevDayRelations.Count} relation, {_prevDaySkills.Count} skill entries).");
             }
             catch (Exception e)
             {
-                Log.Warning($"[Firefly] Failed to load prev day comparisons: {e.Message}");
+                Log.Warning($"[Firefly] Failed to migrate legacy comparisons: {e.Message}");
             }
         }
 
-        public static void SavePrevDayComparisons(string filePath)
+        // ── Save/load ───────────────────────────────────────────────────────────
+        // Everything here is in-flight working state. The narrative itself lives in text
+        // files on disk; only the buffers that would otherwise be lost on quit ride along
+        // inside the save, which is what makes the old pending_events.txt unnecessary.
+        private const char FieldSep = '\u0001';
+
+        public void ExposeData()
         {
-            try
-            {
-                var lines = new List<string> { "[health]" };
-                lines.AddRange(_prevDayHealth.Select(kvp => $"{kvp.Key}\t{kvp.Value.Serialize()}"));
-                lines.Add("[relations]");
-                lines.AddRange(_prevDayRelations.Select(kvp => $"{kvp.Key}\t{kvp.Value}"));
-                lines.Add("[skills]");
-                lines.AddRange(_prevDaySkills.Select(kvp => $"{kvp.Key}\t{kvp.Value}"));
-                File.WriteAllLines(filePath, lines, Encoding.UTF8);
-            }
-            catch (Exception e)
-            {
-                Log.Warning($"[Firefly] Failed to save prev day comparisons: {e.Message}");
-            }
+            bool saving = Scribe.mode == LoadSaveMode.Saving;
+
+            var pending   = saving ? EncodePendingEvents() : null;
+            var health    = saving ? _prevDayHealth.ToDictionary(kv => kv.Key, kv => kv.Value.Serialize()) : null;
+            var battles   = saving ? _announcedBattles.ToList() : null;
+            var hazards   = saving ? _announcedHazards.Select(h => $"{h.Item1}{FieldSep}{h.Item2}").ToList() : null;
+            var pawnIds   = saving ? _trackedPawnIds.ToList() : null;
+            var pawnLines = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
+
+            Scribe_Values.Look(ref _recordingDay, "recordingDay", 0);
+            Scribe_Values.Look(ref _initialized, "initialized", false);
+            Scribe_Values.Look(ref _timelineHeaderWritten, "timelineHeaderWritten", false);
+            Scribe_Collections.Look(ref pending,            "pendingEvents",     LookMode.Value);
+            Scribe_Collections.Look(ref health,             "prevDayHealth",     LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",     LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref battles,            "announcedBattles",  LookMode.Value);
+            Scribe_Collections.Look(ref hazards,            "announcedHazards",  LookMode.Value);
+            Scribe_Collections.Look(ref pawnIds,            "trackedPawnIds",    LookMode.Value);
+            Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines",  LookMode.Value);
+
+            if (Scribe.mode != LoadSaveMode.LoadingVars) return;
+
+            if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
+            if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
+
+            _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
+            if (health != null)
+                foreach (var kv in health)
+                    _prevDayHealth[kv.Key] = PawnHealthSnapshot.Deserialize(kv.Value);
+
+            _announcedBattles = battles != null ? new HashSet<string>(battles) : new HashSet<string>();
+
+            _announcedHazards = new HashSet<(string, string)>();
+            if (hazards != null)
+                foreach (var h in hazards)
+                {
+                    var p = h.Split(FieldSep);
+                    if (p.Length == 2) _announcedHazards.Add((p[0], p[1]));
+                }
+
+            _trackedPawnIds.Clear();
+            if (pawnIds != null)
+                foreach (var id in pawnIds) _trackedPawnIds.Add(id);
+
+            _trackedPawnLines.Clear();
+            if (pawnLines != null)
+                foreach (var l in pawnLines)
+                {
+                    var p = l.Split(FieldSep);
+                    if (p.Length == 2) _trackedPawnLines.Add((p[0], p[1]));
+                }
+
+            DecodePendingEvents(pending);
         }
 
-        private const  string PendingFileName    = "pending_events.txt";
+        private List<string> EncodePendingEvents()
+        {
+            var lines = new List<string>();
+            lock (_capturedBattleEvents)
+                foreach (var e in _capturedBattleEvents)
+                    lines.Add($"C|{e.Initiator}|{e.InitiatorId}|{e.Target}|{e.TargetId}|{e.ReachedTarget}|{e.Deflected}|{e.DidDamage}|{e.CoverHit ?? ""}|{e.Weapon ?? ""}|{e.InitiatorIsColonist}|{e.BattleId}|{e.Tick}");
+            lock (_capturedHazardEvents)
+                foreach (var e in _capturedHazardEvents)
+                    lines.Add($"H|{e.Victim}|{e.HazardLabel}|{e.Tick}|{e.DidDamage}");
+            lock (_capturedOutcomes)
+                foreach (var (subject, outcome, initiator, cause) in _capturedOutcomes)
+                    lines.Add($"O|{subject}|{outcome}|{initiator}|{cause}");
+            return lines;
+        }
+
+        private void DecodePendingEvents(List<string> lines)
+        {
+            _capturedBattleEvents.Clear();
+            _capturedHazardEvents.Clear();
+            _capturedOutcomes.Clear();
+            if (lines == null) return;
+
+            foreach (var line in lines)
+            {
+                if (line.NullOrEmpty()) continue;
+                var p = line.Split('|');
+                try
+                {
+                    if (p[0] == "C" && p.Length >= 13)
+                    {
+                        _capturedBattleEvents.Add(new CombatEvent
+                        {
+                            Initiator           = p[1],
+                            InitiatorId         = p[2],
+                            Target              = p[3],
+                            TargetId            = p[4],
+                            ReachedTarget       = p[5] == "True",
+                            Deflected           = p[6] == "True",
+                            DidDamage           = p[7] == "True",
+                            CoverHit            = p[8].NullOrEmpty() ? null : p[8],
+                            Weapon              = p[9].NullOrEmpty() ? null : p[9],
+                            InitiatorIsColonist = p[10] == "True",
+                            BattleId            = p[11],
+                            Tick                = long.Parse(p[12]),
+                        });
+                    }
+                    else if (p[0] == "H" && p.Length >= 5)
+                    {
+                        _capturedHazardEvents.Add(new HazardEvent
+                        {
+                            Victim      = p[1],
+                            HazardLabel = p[2],
+                            Tick        = long.Parse(p[3]),
+                            DidDamage   = p[4] == "True",
+                        });
+                    }
+                    else if (p[0] == "O" && p.Length >= 5)
+                    {
+                        _capturedOutcomes.Add((p[1], p[2], p[3], p[4]));
+                    }
+                }
+                catch { }
+            }
+
+            int total = _capturedBattleEvents.Count + _capturedHazardEvents.Count + _capturedOutcomes.Count;
+            if (total > 0) Log.Message($"[Firefly] Restored {total} in-flight events from save.");
+        }
+
         private const  string CurrentTimelineFile = "current_timeline.txt";
         private const  string CombatEventsFile    = "current_combat_events.txt";
         private const  string HazardEventsFile    = "current_hazard_events.txt";
-        private static string _outputDir          = null;
-        private static bool   _timelineHeaderWritten = false;
-        private static readonly HashSet<string> _trackedPawnIds  = new HashSet<string>();
-        private static readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
+        private string _outputDir = null;
+        private bool _timelineHeaderWritten = false;
+        private readonly HashSet<string> _trackedPawnIds = new HashSet<string>();
+        private readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
+        private readonly StringBuilder _timelineBuffer = new StringBuilder();
 
-        public static void SetOutputDir(string dir)
+        public void SetOutputDir(string dir)
         {
             _outputDir = dir;
+            if (dir != null) TryLoadLegacyComparisons(Path.Combine(dir, "prev_day_comparisons.txt"));
         }
 
-        private static void EnsureFileHeaders(Map map, float lon, long tick)
+        private void EnsureFileHeaders(Map map, float lon, long tick)
         {
             if (_outputDir == null) return;
             string colony = map.info?.parent?.Label ?? "Unnamed Colony";
@@ -601,17 +715,24 @@ namespace Firefly
             }
         }
 
-        private static void WriteFileHeader(string fileName, string header)
+        private void WriteFileHeader(string fileName, string header)
         {
-            try { File.WriteAllText(Path.Combine(_outputDir, fileName), header, Encoding.UTF8); }
+            FlushTimelineBuffer();
+            try
+            {
+                // Prepend, never overwrite — events are appended from midnight onward but the header
+                // is only written on the next 3-hourly Record, which would erase them.
+                string path = Path.Combine(_outputDir, fileName);
+                string existing = File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : "";
+                File.WriteAllText(path, header + existing, Encoding.UTF8);
+            }
             catch { }
         }
 
-        public static void AppendRawToTimeline(string content)
+        public void AppendRawToTimeline(string content)
         {
             if (_outputDir == null || content.NullOrEmpty()) return;
-            try { File.AppendAllText(Path.Combine(_outputDir, CurrentTimelineFile), content, Encoding.UTF8); }
-            catch { }
+            lock (_timelineBuffer) _timelineBuffer.Append(content);
         }
 
         private static string GetPawnDescriptor(Pawn pawn)
@@ -632,7 +753,7 @@ namespace Firefly
         }
 
         // Returns " (Descriptor)" on first appearance, "" on subsequent ones.
-        public static string IntroduceTag(Pawn pawn)
+        public string IntroduceTag(Pawn pawn)
         {
             if (!_initialized || pawn == null) return "";
             string id = pawn.ThingID;
@@ -647,7 +768,7 @@ namespace Firefly
         }
 
 
-        public static string BuildPawnRosterSection()
+        public string BuildPawnRosterSection()
         {
             lock (_trackedPawnLines)
             {
@@ -695,18 +816,16 @@ namespace Firefly
             return text.Substring(0, idx + name.Length) + tag + text.Substring(idx + name.Length);
         }
 
-        public static void DrainAndWriteSections(float lon)
+        public void DrainAndWriteSections(float lon)
         {
             var (combatSimple, _) = DrainCombatEvents();
             var hazardSummaries   = DrainHazardEvents();
             AppendSectionToFile(CombatEventsFile, "COMBAT",  combatSimple,    lon);
             AppendSectionToFile(HazardEventsFile, "HAZARDS", hazardSummaries, lon);
-            DeletePendingEvents();
         }
 
-        private static void AppendEvent(long tick, string text)
+        private void AppendEvent(long tick, string text)
         {
-            lock (_timeline) _timeline.Add((tick, text));
             if (_outputDir == null) return;
             try
             {
@@ -714,12 +833,28 @@ namespace Firefly
                 int hr  = GenDate.HourInteger(tick, lon);
                 int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
                 string flat = text.Replace("\r\n", " ").Replace('\n', ' ').Trim();
-                File.AppendAllText(Path.Combine(_outputDir, CurrentTimelineFile), $"  - [{hr:D2}:{min:D2}] {flat}\n", Encoding.UTF8);
+                lock (_timelineBuffer) _timelineBuffer.Append($"  - [{hr:D2}:{min:D2}] {flat}\n");
             }
             catch { }
         }
 
-        private static void AppendSectionToFile(string fileName, string header, List<(long Tick, string Text)> entries, float lon)
+        // Events are buffered and written in batches. A raid fires hundreds of log entries a
+        // second, and an open/write/close per entry on the main thread costs real TPS.
+        public void FlushTimelineBuffer()
+        {
+            if (_outputDir == null) return;
+            string chunk;
+            lock (_timelineBuffer)
+            {
+                if (_timelineBuffer.Length == 0) return;
+                chunk = _timelineBuffer.ToString();
+                _timelineBuffer.Length = 0;
+            }
+            try { File.AppendAllText(Path.Combine(_outputDir, CurrentTimelineFile), chunk, Encoding.UTF8); }
+            catch { }
+        }
+
+        private void AppendSectionToFile(string fileName, string header, List<(long Tick, string Text)> entries, float lon)
         {
             if (_outputDir == null || entries.Count == 0) return;
             try
@@ -737,111 +872,18 @@ namespace Firefly
             catch { }
         }
 
-        public static void FlushPendingEvents()
+        public void Clear()
         {
-            if (_outputDir == null) return;
-            try
-            {
-                var lines = new List<string>();
-                lock (_capturedBattleEvents)
-                {
-                    foreach (var e in _capturedBattleEvents)
-                        lines.Add($"C|{e.Initiator}|{e.InitiatorId}|{e.Target}|{e.TargetId}|{e.ReachedTarget}|{e.Deflected}|{e.DidDamage}|{e.CoverHit ?? ""}|{e.Weapon ?? ""}|{e.InitiatorIsColonist}|{e.BattleId}|{e.Tick}");
-                }
-                lock (_capturedHazardEvents)
-                {
-                    foreach (var e in _capturedHazardEvents)
-                        lines.Add($"H|{e.Victim}|{e.HazardLabel}|{e.Tick}|{e.DidDamage}");
-                }
-                lock (_capturedOutcomes)
-                {
-                    foreach (var (subject, outcome, initiator, cause) in _capturedOutcomes)
-                        lines.Add($"O|{subject}|{outcome}|{initiator}|{cause}");
-                }
-                File.WriteAllLines(Path.Combine(_outputDir, PendingFileName), lines, Encoding.UTF8);
-            }
-            catch (Exception e)
-            {
-                Log.Warning($"[Firefly] Failed to flush pending events: {e.Message}");
-            }
-        }
-
-        public static void LoadPendingEvents()
-        {
-            if (_outputDir == null) return;
-            string path = Path.Combine(_outputDir, PendingFileName);
-            if (!File.Exists(path)) return;
-            try
-            {
-                var lines = File.ReadAllLines(path, Encoding.UTF8);
-                foreach (var line in lines)
-                {
-                    if (line.NullOrEmpty()) continue;
-                    var p = line.Split('|');
-                    if (p[0] == "C" && p.Length >= 13)
-                    {
-                        _capturedBattleEvents.Add(new CombatEvent
-                        {
-                            Initiator           = p[1],
-                            InitiatorId         = p[2],
-                            Target              = p[3],
-                            TargetId            = p[4],
-                            ReachedTarget       = p[5] == "True",
-                            Deflected           = p[6] == "True",
-                            DidDamage           = p[7] == "True",
-                            CoverHit            = p[8].NullOrEmpty() ? null : p[8],
-                            Weapon              = p[9].NullOrEmpty() ? null : p[9],
-                            InitiatorIsColonist = p[10] == "True",
-                            BattleId            = p[11],
-                            Tick                = long.Parse(p[12]),
-                        });
-                    }
-                    else if (p[0] == "H" && p.Length >= 5)
-                    {
-                        _capturedHazardEvents.Add(new HazardEvent
-                        {
-                            Victim      = p[1],
-                            HazardLabel = p[2],
-                            Tick        = long.Parse(p[3]),
-                            DidDamage   = p[4] == "True",
-                        });
-                    }
-                    else if (p[0] == "O" && p.Length >= 5)
-                    {
-                        _capturedOutcomes.Add((p[1], p[2], p[3], p[4]));
-                    }
-                }
-                Log.Message($"[Firefly] Loaded {lines.Length} pending events from disk.");
-            }
-            catch (Exception e)
-            {
-                Log.Warning($"[Firefly] Failed to load pending events: {e.Message}");
-            }
-        }
-
-        private static void DeletePendingEvents()
-        {
-            if (_outputDir == null) return;
-            try
-            {
-                string path = Path.Combine(_outputDir, PendingFileName);
-                if (File.Exists(path)) File.Delete(path);
-            }
-            catch { }
-        }
-
-        public static void Clear()
-        {
-            _timeline.Clear();
-
+            // Fire can start again next day, so hazard announcements reset.
             _announcedHazards.Clear();
-            lock (_capturedOutcomes) _capturedOutcomes.Clear(); // fire can start again next day — re-announce it
-            // _announcedBattles intentionally kept — battle IDs are unique per session, so a
+            lock (_capturedOutcomes) _capturedOutcomes.Clear();
+            // _announcedBattles intentionally kept — battle IDs are unique per game, so a
             // genuine new fight always gets a new ID; no need to re-announce across day boundaries
 
             _timelineHeaderWritten = false;
             lock (_trackedPawnIds)  _trackedPawnIds.Clear();
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
+            lock (_timelineBuffer)  _timelineBuffer.Length = 0;
 
             if (_outputDir != null)
             {
@@ -850,9 +892,10 @@ namespace Firefly
             }
         }
 
-        public static void WriteContextFile()
+        public void WriteContextFile()
         {
             if (_outputDir == null) return;
+            FlushTimelineBuffer();
             try
             {
                 string dailyDir = Path.Combine(_outputDir, "daily records");
@@ -938,7 +981,7 @@ namespace Firefly
             return s;
         }
 
-        private static List<(long Tick, string Text)> DrainHazardEvents()
+        private List<(long Tick, string Text)> DrainHazardEvents()
         {
             List<HazardEvent> events;
             lock (_capturedHazardEvents)
@@ -981,7 +1024,7 @@ namespace Firefly
             }
         }
 
-        private static (List<(long Tick, string Text)> Simple, List<string> Detailed) DrainCombatEvents()
+        private (List<(long Tick, string Text)> Simple, List<string> Detailed) DrainCombatEvents()
         {
             List<CombatEvent> shots;
             lock (_capturedBattleEvents)
@@ -990,14 +1033,16 @@ namespace Firefly
                 _capturedBattleEvents.Clear();
             }
 
+            // Bail before draining outcomes — otherwise a downed/killed record with no shots
+            // behind it (fire, a fall) is consumed here and never written anywhere.
+            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>());
+
             List<(string Subject, string Outcome, string Initiator, string Cause)> outcomes;
             lock (_capturedOutcomes)
             {
                 outcomes = new List<(string, string, string, string)>(_capturedOutcomes);
                 _capturedOutcomes.Clear();
             }
-
-            if (shots.Count == 0) return (new List<(long, string)>(), new List<string>());
 
             var summaries = new List<string>();
 
@@ -1145,18 +1190,6 @@ namespace Firefly
             if (parts.Count == 0) return "";
             if (parts.Count == 1) return parts[0];
             return string.Join(", ", parts.Take(parts.Count - 1)) + " and " + parts.Last();
-        }
-
-        private static List<string> DrainList(List<string> source, string prefix)
-        {
-            var result = new List<string>();
-            lock (source)
-            {
-                foreach (var text in source)
-                    if (!text.NullOrEmpty()) result.Add(prefix.NullOrEmpty() ? text : $"{prefix} {text}");
-                source.Clear();
-            }
-            return result;
         }
 
         private class PawnHealthSnapshot
@@ -1382,14 +1415,6 @@ namespace Firefly
             return "";
         }
 
-        private static string InjuryPhrase(string sourceLabel)
-        {
-            if (string.Equals(sourceLabel, "fire", StringComparison.OrdinalIgnoreCase)) return "Burns from fire";
-            if (sourceLabel == "scar") return "Old scars";
-            if (sourceLabel.NullOrEmpty()) return "Injuries (unknown cause)";
-            return $"Injuries from {sourceLabel}";
-        }
-
         private static string GetPawnLocation(Pawn p)
         {
             if (!p.Spawned)
@@ -1410,7 +1435,7 @@ namespace Firefly
             return role;
         }
 
-        public static void CaptureArchiveEntry(IArchivable item)
+        public void CaptureArchiveEntry(IArchivable item)
         {
             if (!_initialized || item == null) return;
             try
@@ -1470,7 +1495,7 @@ namespace Firefly
             }
         }
 
-        public static void CaptureLogEntry(LogEntry entry)
+        public void CaptureLogEntry(LogEntry entry)
         {
             if (!_initialized || entry == null) return;
             try

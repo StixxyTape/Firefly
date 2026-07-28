@@ -13,7 +13,7 @@ namespace Firefly
             {
                 if (__instance.hidden) return;
                 string name = __instance.name ?? __instance.root?.defName ?? "unknown quest";
-                ColonyLedger.CaptureDecision($"[Quest Resolved] {name} — {outcome}");
+                ColonyLedger.Current?.CaptureDecision($"[Quest Resolved] {name} — {outcome}");
             }
             catch { }
         }

@@ -8,7 +8,7 @@ namespace Firefly
     {
         static void Postfix(LogEntry entry)
         {
-            try { ColonyLedger.CaptureLogEntry(entry); }
+            try { ColonyLedger.Current?.CaptureLogEntry(entry); }
             catch { }
         }
     }

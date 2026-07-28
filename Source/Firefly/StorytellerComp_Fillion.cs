@@ -66,15 +66,16 @@ namespace Firefly
             int hourOfDay  = GenLocalDate.HourOfDay(map);
             int hourBucket = hourOfDay / 3;
 
+            var ledger = ColonyLedger.Current;
+            if (ledger == null) yield break;
+
             // First tick — initialize immediately so capture methods start working right away
             if (lastHourBucket == -1)
             {
                 lastHourBucket = hourBucket;
                 lastDrainHour  = hourOfDay;
-                ColonyLedger.SetOutputDir(GetOutputDir());
-                ColonyLedger.LoadPendingEvents();
-                ColonyLedger.Record(map, hourOfDay);
-                FlushLedger(map);
+                ledger.SetOutputDir(FireflyGameComponent.GetOutputDir());
+                ledger.Record(map, hourOfDay);
                 yield break;
             }
 
@@ -83,7 +84,7 @@ namespace Firefly
             {
                 lastDrainHour = hourOfDay;
                 float drainLon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
-                ColonyLedger.DrainAndWriteSections(drainLon);
+                ledger.DrainAndWriteSections(drainLon);
             }
 
             if (hourBucket == lastHourBucket) yield break;
@@ -91,16 +92,15 @@ namespace Firefly
             if (hourBucket < lastHourBucket)
             {
                 // Midnight crossed: add the 21→00 snapshot to the closing day, then archive it.
-                int closingDay = ColonyLedger.RecordingDay;
-                ColonyLedger.Record(map, hourOfDay);
+                int closingDay = ledger.RecordingDay;
+                ledger.Record(map, hourOfDay);
                 WriteTimeline(map, closingDay);
                 lastHourBucket = hourBucket;
                 yield break;
             }
 
             lastHourBucket = hourBucket;
-            ColonyLedger.Record(map, hourOfDay);
-            FlushLedger(map);
+            ledger.Record(map, hourOfDay);
 
             // Delegate incident firing to the selected storyteller curve
             foreach (var comp in GetDelegateComps())
@@ -111,26 +111,6 @@ namespace Firefly
                 foreach (var fi in incidents)
                     if (fi != null) yield return fi;
             }
-        }
-
-        private static string GetOutputDir()
-        {
-            // permadeathModeUniqueName is the save file's base name — unique per save slot, not per world
-            string saveName = Current.Game?.Info?.permadeathModeUniqueName;
-
-            if (saveName.NullOrEmpty()) saveName = "unknown";
-
-            string safeName = string.Concat(
-                saveName.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
-
-            string dir = Path.Combine(GenFilePaths.ConfigFolderPath, "Firefly", safeName);
-            Directory.CreateDirectory(dir);
-            return dir;
-        }
-
-        private static void FlushLedger(Map map)
-        {
-            ColonyLedger.TryLoadPrevDayComparisons(Path.Combine(GetOutputDir(), "prev_day_comparisons.txt"));
         }
 
         private static readonly string SummarySystemPrompt =
@@ -148,26 +128,29 @@ namespace Firefly
         {
             try
             {
-                if (day < 0) day = ColonyLedger.RecordingDay;
-                string dir = GetOutputDir();
+                var ledger = ColonyLedger.Current;
+                if (ledger == null) return;
+
+                if (day < 0) day = ledger.RecordingDay;
+                string dir = FireflyGameComponent.GetOutputDir();
 
                 // Append health/relations/skills to timeline file before archiving
-                string healthSection = ColonyLedger.BuildComparisonSection(map);
-                ColonyLedger.SavePrevDayComparisons(Path.Combine(dir, "prev_day_comparisons.txt"));
+                string healthSection = ledger.BuildComparisonSection(map);
                 if (!healthSection.NullOrEmpty())
-                    ColonyLedger.AppendRawToTimeline("\n" + healthSection);
+                    ledger.AppendRawToTimeline("\n" + healthSection);
 
                 // Drain any remaining combat/hazard events before assembling
                 float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
-                ColonyLedger.DrainAndWriteSections(lon);
+                ledger.DrainAndWriteSections(lon);
+                ledger.FlushTimelineBuffer();
 
                 // Assemble daily file from the live files, merging repeated sections
                 string timelineContent = ReadFileOrEmpty(Path.Combine(dir, "current_timeline.txt"));
                 string combatContent   = MergeCombatSections(ReadFileOrEmpty(Path.Combine(dir, "current_combat_events.txt")));
                 string hazardContent   = MergeHazardSections(ReadFileOrEmpty(Path.Combine(dir, "current_hazard_events.txt")));
-                string rosterSection   = ColonyLedger.BuildPawnRosterSection();
+                string rosterSection   = ledger.BuildPawnRosterSection();
 
-                ColonyLedger.Clear();
+                ledger.Clear();
 
                 // Insert pawn roster between the day header and === EVENTS ===
                 if (!rosterSection.NullOrEmpty())
@@ -319,7 +302,7 @@ namespace Firefly
                     try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
                     catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary day {day}: {e.Message}"); }
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
-                    ColonyLedger.WriteContextFile();
+                    ColonyLedger.Current?.WriteContextFile();
                     if (triggerArc) SendArcSummaryRequest(dir, day);
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
@@ -391,7 +374,7 @@ namespace Firefly
                         }
                         catch (Exception e) { Log.Warning($"[Firefly] Failed to write colony history: {e.Message}"); }
                         Log.Message($"[Firefly] Colony history updated through Day {day}");
-                        ColonyLedger.WriteContextFile();
+                        ColonyLedger.Current?.WriteContextFile();
                     },
                     onError: err => Log.Warning($"[Firefly] Colony history LLM failed for Day {day}: {err}"));
             }
@@ -401,10 +384,21 @@ namespace Firefly
             }
         }
 
+        // Backfill runs strictly one request at a time — a colony with many gaps would otherwise
+        // fire a request per missing day simultaneously and hit rate limits.
+        private static readonly Queue<(int Day, string Content)> _backfillQueue = new Queue<(int, string)>();
+        private static string _backfillDir;
+        private static bool _backfillActive;
+
         private static void BackfillMissingSummaries(string dir, int excludeDay)
         {
+            if (_backfillActive) return;
             try
             {
+                _backfillQueue.Clear();
+                _backfillDir = dir;
+
+                var pending = new List<(int Day, string Content)>();
                 foreach (var timelinePath in Directory.GetFiles(dir, "daily_timeline_day*.txt"))
                 {
                     string stem = Path.GetFileNameWithoutExtension(timelinePath);
@@ -419,15 +413,50 @@ namespace Firefly
                     catch { continue; }
 
                     if (content.NullOrEmpty()) continue;
-
-                    Log.Message($"[Firefly] Backfilling missing summary for Day {day}...");
-                    SendSummaryRequest(dir, day, content);
+                    pending.Add((day, content));
                 }
+
+                if (pending.Count == 0) return;
+
+                foreach (var item in pending.OrderBy(p => p.Day))
+                    _backfillQueue.Enqueue(item);
+
+                Log.Message($"[Firefly] Backfilling {_backfillQueue.Count} missing summaries, one at a time...");
+                _backfillActive = true;
+                ProcessBackfillQueue();
             }
             catch (Exception e)
             {
+                _backfillActive = false;
                 Log.Warning($"[Firefly] BackfillMissingSummaries failed: {e.Message}");
             }
+        }
+
+        private static void ProcessBackfillQueue()
+        {
+            if (_backfillQueue.Count == 0) { _backfillActive = false; return; }
+
+            var (day, content) = _backfillQueue.Dequeue();
+            string summaryPath = Path.Combine(_backfillDir, $"daily_summary_day{day}.txt");
+            string custom = FireflyMod.Settings.CustomPrompt;
+            string systemPrompt = !custom.NullOrEmpty() ? custom : SummarySystemPrompt;
+
+            Log.Message($"[Firefly] Backfilling Day {day} ({_backfillQueue.Count} remaining)...");
+            LLMClient.Send(
+                systemPrompt,
+                content,
+                onSuccess: summary =>
+                {
+                    try { File.WriteAllText(summaryPath, summary, Encoding.UTF8); }
+                    catch (Exception e) { Log.Warning($"[Firefly] Failed to write summary day {day}: {e.Message}"); }
+                    ColonyLedger.Current?.WriteContextFile();
+                    ProcessBackfillQueue();
+                },
+                onError: err =>
+                {
+                    Log.Warning($"[Firefly] Backfill failed for Day {day}: {err}");
+                    ProcessBackfillQueue();
+                });
         }
     }
 }

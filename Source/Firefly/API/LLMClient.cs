@@ -24,6 +24,8 @@ namespace Firefly
 
     public static class LLMClient
     {
+        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+
         public static void Send(
             string systemPrompt,
             string userPrompt,
@@ -74,50 +76,50 @@ namespace Firefly
 
                 try
                 {
-                    using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) })
+                    var url = settings.BaseUrl.TrimEnd('/') + "/chat/completions";
+
+                    var messagePayloads = new List<object>();
+                    foreach (var m in messages)
+                        messagePayloads.Add(new { role = m.Role, content = m.Content });
+
+                    var payload = JsonConvert.SerializeObject(new
                     {
-                        var url = settings.BaseUrl.TrimEnd('/') + "/chat/completions";
+                        model = settings.Model,
+                        messages = messagePayloads,
+                        max_tokens = 2048
+                    });
 
-                        var messagePayloads = new List<object>();
-                        foreach (var m in messages)
-                            messagePayloads.Add(new { role = m.Role, content = m.Content });
+                    var request = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(payload, Encoding.UTF8, "application/json")
+                    };
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
+                    request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
+                    request.Headers.Add("X-Title", "Firefly");
 
-                        var payload = JsonConvert.SerializeObject(new
-                        {
-                            model = settings.Model,
-                            messages = messagePayloads,
-                            max_tokens = 2048
-                        });
+                    var response = await Http.SendAsync(request);
+                    var body = await response.Content.ReadAsStringAsync();
 
-                        var request = new HttpRequestMessage(HttpMethod.Post, url)
-                        {
-                            Content = new StringContent(payload, Encoding.UTF8, "application/json")
-                        };
-                        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
-                        request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
-                        request.Headers.Add("X-Title", "Firefly");
-
-                        var response = await http.SendAsync(request);
-                        var body = await response.Content.ReadAsStringAsync();
-
-                        if (!response.IsSuccessStatusCode)
-                        {
-                            lastError = $"HTTP {(int)response.StatusCode}: {body}";
-                            Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
-                            continue;
-                        }
-
-                        var content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
-                        if (content == null)
-                        {
-                            lastError = "Malformed response — no content field in reply.";
-                            Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
-                            continue;
-                        }
-
-                        LongEventHandler.ExecuteWhenFinished(() => onSuccess(content));
-                        return;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        int code = (int)response.StatusCode;
+                        lastError = $"HTTP {code}: {body}";
+                        Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                        // Bad key, bad model, bad request — retrying changes nothing. Only 429 is worth another try.
+                        if (code >= 400 && code < 500 && code != 429) break;
+                        continue;
                     }
+
+                    var content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
+                    if (content == null)
+                    {
+                        lastError = "Malformed response — no content field in reply.";
+                        Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                        continue;
+                    }
+
+                    LongEventHandler.ExecuteWhenFinished(() => onSuccess(content));
+                    return;
                 }
                 catch (TaskCanceledException)
                 {
@@ -131,7 +133,7 @@ namespace Firefly
                 }
             }
 
-            LongEventHandler.ExecuteWhenFinished(() => onError($"Failed after {maxAttempts} attempts. Last error: {lastError}"));
+            LongEventHandler.ExecuteWhenFinished(() => onError($"Request failed. Last error: {lastError}"));
         }
     }
 }
