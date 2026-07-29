@@ -92,10 +92,12 @@ namespace Firefly
             Thing    recipientThing      = Read<Thing>(RangedRecipientThing, entry);
             ThingDef weaponDef           = Read<ThingDef>(RangedWeaponDef, entry);
 
-            string initiator   = initiatorPawn?.LabelShort ?? "?";
-            string initiatorId = initiatorPawn?.ThingID    ?? initiator;
-            string target      = originalTargetPawn?.LabelShort ?? originalTargetThing?.LabelShort ?? "?";
-            string targetId    = originalTargetPawn?.ThingID    ?? originalTargetThing?.ThingID    ?? target;
+            string initiator   = ColonyLedger.PawnFullName(initiatorPawn);
+            string initiatorId = initiatorPawn?.ThingID ?? initiatorPawn?.LabelShort ?? "?";
+            string target      = originalTargetPawn != null
+                ? ColonyLedger.PawnFullName(originalTargetPawn)
+                : originalTargetThing?.LabelShort ?? "?";
+            string targetId    = originalTargetPawn?.ThingID ?? originalTargetThing?.ThingID ?? target;
             string weapon      = weaponDef?.label;
 
             bool reachedTarget       = recipientPawn != null && recipientPawn == originalTargetPawn;
@@ -105,7 +107,7 @@ namespace Firefly
             string coverHit = null;
             if (!reachedTarget)
             {
-                if (recipientPawn != null) coverHit = recipientPawn.LabelShort;
+                if (recipientPawn != null) coverHit = ColonyLedger.PawnFullName(recipientPawn);
                 else if (recipientThing != null) coverHit = recipientThing.LabelShort;
             }
 
@@ -124,10 +126,10 @@ namespace Firefly
             string      toolLabel      = Read<string>(MeleeToolLabel, entry);
             RulePackDef ruleDef        = Read<RulePackDef>(MeleeRuleDef, entry);
 
-            string initiatorName = initiator?.LabelShort ?? "?";
-            string initiatorId   = initiator?.ThingID    ?? initiatorName;
-            string targetName    = recipientPawn?.LabelShort ?? "?";
-            string targetId      = recipientPawn?.ThingID    ?? targetName;
+            string initiatorName = ColonyLedger.PawnFullName(initiator);
+            string initiatorId   = initiator?.ThingID ?? initiator?.LabelShort ?? "?";
+            string targetName    = ColonyLedger.PawnFullName(recipientPawn);
+            string targetId      = recipientPawn?.ThingID ?? recipientPawn?.LabelShort ?? "?";
             string weapon        = ownerEquipment?.label ?? toolLabel;
 
             string ruleDefName       = ruleDef?.defName ?? "";
@@ -148,7 +150,7 @@ namespace Firefly
             Pawn        recipientPawn = Read<Pawn>(DamageTakenRecipientPawn, entry);
             RulePackDef ruleDef       = Read<RulePackDef>(DamageTakenRuleDef, entry);
             if (recipientPawn == null || !recipientPawn.IsColonist) return;
-            string victim      = recipientPawn.LabelShort ?? "?";
+            string victim      = ColonyLedger.PawnFullName(recipientPawn);
             string hazardLabel = GetHazardLabel(ruleDef);
             ColonyLedger.Current?.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult, recipientPawn);
         }
@@ -191,11 +193,13 @@ namespace Firefly
             string causeStr     = null;
             string subjectTag   = ledger.IntroduceTag(subject);
             string initiatorTag = initiator != null ? ledger.IntroduceTag(initiator) : "";
+            string subjectName  = ColonyLedger.PawnFullName(subject);
+            string initiatorName = initiator != null ? ColonyLedger.PawnFullName(initiator) : null;
             var sb = new System.Text.StringBuilder();
-            sb.Append(subject.LabelShort);
+            sb.Append(subjectName);
             sb.Append(subjectTag);
             sb.Append($" {stateChange}");
-            if (initiator != null) sb.Append($" by {initiator.LabelShort}{initiatorTag}");
+            if (initiatorName != null) sb.Append($" by {initiatorName}{initiatorTag}");
             if (culpritHediff != null)
             {
                 causeStr = culpritHediff.LabelCap;
@@ -203,8 +207,8 @@ namespace Firefly
                 sb.Append($" ({causeStr})");
             }
 
-            ledger.CaptureStateChange(subject.LabelShort, sb.ToString());
-            ledger.CaptureOutcome(subject.LabelShort, subject.ThingID, stateChange, initiator?.LabelShort, causeStr);
+            ledger.CaptureStateChange(subjectName, sb.ToString());
+            ledger.CaptureOutcome(subjectName, subject.ThingID, stateChange, initiatorName, causeStr);
         }
     }
 }

@@ -250,7 +250,7 @@ namespace Firefly
                     string location  = GetPawnLocation(p);
                     int    mood      = Mathf.RoundToInt((p.needs?.mood?.CurLevel ?? 0.5f) * 100f);
                     string introTag  = IntroduceTag(p);
-                    AppendEvent(snapshotTick, $"{p.LabelShort ?? "?"}{introTag} — {activity} ({location}, mood {mood}%)");
+                    AppendEvent(snapshotTick, $"{PawnFullName(p)}{introTag} — {activity} ({location}, mood {mood}%)");
                 }
             }
 
@@ -430,8 +430,8 @@ namespace Firefly
             foreach (var p in colonists)
             {
                 if (p == null) continue;
-                string name = p.LabelShort ?? "?";
-                string id   = p.ThingID    ?? name;
+                string name = PawnFullName(p);
+                string id   = p.ThingID ?? p.LabelShort ?? "?";
                 var    snap = TakePawnHealthSnapshot(p);
                 currentHealth[id] = snap;
                 _prevDayHealth.TryGetValue(id, out PawnHealthSnapshot prev);
@@ -487,8 +487,8 @@ namespace Firefly
             foreach (var pawnA in colonists)
             {
                 if (pawnA == null) continue;
-                string idA   = pawnA.ThingID   ?? pawnA.LabelShort ?? "?";
-                string nameA = pawnA.LabelShort ?? "?";
+                string idA   = pawnA.ThingID ?? pawnA.LabelShort ?? "?";
+                string nameA = PawnFullName(pawnA);
 
                 var related = new HashSet<Pawn>();
                 if (pawnA.relations?.DirectRelations != null)
@@ -505,8 +505,8 @@ namespace Firefly
                 foreach (var pawnB in related)
                 {
                     if (pawnB == null) continue;
-                    string idB   = pawnB.ThingID   ?? pawnB.LabelShort ?? "?";
-                    string nameB = pawnB.LabelShort ?? "?";
+                    string idB   = pawnB.ThingID ?? pawnB.LabelShort ?? "?";
+                    string nameB = PawnFullName(pawnB);
                     try
                     {
                         var directRels = pawnA.relations?.DirectRelations
@@ -603,7 +603,7 @@ namespace Firefly
             {
                 if (p?.skills == null) continue;
                 string id   = p.ThingID ?? p.LabelShort ?? "?";
-                string name = p.LabelShort ?? "?";
+                string name = PawnFullName(p);
                 var parts = p.skills.skills
                     .Where(s => !s.TotallyDisabled)
                     .Select(s => $"{s.def.LabelCap}:{s.Level}:{s.passion}");
@@ -846,6 +846,21 @@ namespace Firefly
             if (total > 0) Log.Message($"[Firefly] Restored {total} in-flight events from save.");
         }
 
+        // ── Pawn name formatting ──────────────────────────────────────────────
+
+        public static string PawnFullName(Pawn pawn)
+        {
+            if (pawn == null) return "?";
+            if (pawn.Name is NameTriple nt)
+            {
+                bool hasNick = !nt.Nick.NullOrEmpty() && nt.Nick != nt.First && nt.Nick != nt.Last;
+                return hasNick
+                    ? $"{nt.First} '{nt.Nick}' {nt.Last}"
+                    : $"{nt.First} {nt.Last}".Trim();
+            }
+            return pawn.LabelShort ?? "?";
+        }
+
         // ── Timeline buffer ───────────────────────────────────────────────────
 
         public void AppendRawToTimeline(string content)
@@ -913,7 +928,7 @@ namespace Firefly
             bool isNew;
             lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
             if (!isNew) return "";
-            string name       = pawn.LabelShort ?? "?";
+            string name       = PawnFullName(pawn);
             string descriptor = GetPawnDescriptor(pawn);
             lock (_trackedPawnLines) { _trackedPawnLines.Add((name, descriptor)); }
             return $" ({descriptor})";
