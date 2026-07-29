@@ -44,7 +44,7 @@ namespace Firefly
 
             var  past     = ledger.PastDays;
             int  today    = ledger.RecordingDay;
-            bool hasToday = !ledger.GetCurrentDayContent().NullOrEmpty() && !past.Any(d => d.Day == today);
+            bool hasToday = !past.Any(d => d.Day == today);
 
             if (!hasToday && past.Count == 0 && ledger.ColonyHistory.NullOrEmpty())
             {
@@ -329,11 +329,34 @@ namespace Firefly
             _scrolls.TryGetValue(scrollKey, out Vector2 scroll);
 
             var contentBox = new Rect(rect.x, y, rect.width, rect.yMax - y);
-            DrawTextBox(contentBox, selText, selAc, ref scroll);
+            DrawTextBox(contentBox, selText, selAc, ref scroll, scrollKey);
             _scrolls[scrollKey] = scroll;
         }
 
-        private static void DrawTextBox(Rect box, string text, Color accent, ref Vector2 scroll)
+        private static GUIStyle _selectableStyle;
+        private static GUIStyle SelectableStyle
+        {
+            get
+            {
+                if (_selectableStyle != null) return _selectableStyle;
+                _selectableStyle = new GUIStyle(GUI.skin.textArea)
+                {
+                    wordWrap = true,
+                    richText = false,
+                    padding  = new RectOffset(0, 0, 0, 0),
+                    margin   = new RectOffset(0, 0, 0, 0),
+                    font     = Text.fontStyles[(int)GameFont.Small].font,
+                    fontSize = Text.fontStyles[(int)GameFont.Small].fontSize,
+                    normal   = { background = null, textColor = new Color(0.85f, 0.85f, 0.85f) },
+                    focused  = { background = null, textColor = new Color(0.85f, 0.85f, 0.85f) },
+                    hover    = { background = null, textColor = new Color(0.85f, 0.85f, 0.85f) },
+                    active   = { background = null, textColor = new Color(0.85f, 0.85f, 0.85f) },
+                };
+                return _selectableStyle;
+            }
+        }
+
+        private static void DrawTextBox(Rect box, string text, Color accent, ref Vector2 scroll, string controlKey)
         {
             // Border
             GUI.color = new Color(accent.r, accent.g, accent.b, 0.18f);
@@ -352,10 +375,17 @@ namespace Firefly
                 return;
             }
 
-            float textH  = Text.CalcHeight(text, pad.width - 16f);
+            // Block typed characters so the area is read-only but still selectable/copyable
+            var ev = Event.current;
+            if (ev.type == EventType.KeyDown && ev.character != '\0')
+                ev.Use();
+
+            var   style  = SelectableStyle;
+            float textH  = style.CalcHeight(text, pad.width - 16f);
             var   view   = new Rect(0f, 0f, pad.width - 16f, Mathf.Max(textH, pad.height));
             Widgets.BeginScrollView(pad, ref scroll, view);
-            Widgets.Label(new Rect(0f, 0f, view.width, Mathf.Max(textH, pad.height)), text);
+            GUI.SetNextControlName(controlKey);
+            GUI.TextArea(new Rect(0f, 0f, view.width, Mathf.Max(textH, pad.height)), text, style);
             Widgets.EndScrollView();
         }
 
