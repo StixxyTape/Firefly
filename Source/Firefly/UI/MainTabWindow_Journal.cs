@@ -381,7 +381,7 @@ namespace Firefly
                 ev.Use();
 
             var   style  = SelectableStyle;
-            float textH  = style.CalcHeight(text, pad.width - 16f);
+            float textH  = style.CalcHeight(new GUIContent(text), pad.width - 16f);
             var   view   = new Rect(0f, 0f, pad.width - 16f, Mathf.Max(textH, pad.height));
             Widgets.BeginScrollView(pad, ref scroll, view);
             GUI.SetNextControlName(controlKey);
