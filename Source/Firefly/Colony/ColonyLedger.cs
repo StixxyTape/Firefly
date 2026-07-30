@@ -178,10 +178,22 @@ namespace Firefly
             return parts != null && parts.Count > 0;
         }
 
-        public void CaptureMessage(string text)
+        public void CaptureMessage(Message msg)
         {
-            if (!_initialized || text.NullOrEmpty()) return;
-            AppendEvent(Find.TickManager.TicksAbs, StripTags(text));
+            if (!_initialized || msg?.text.NullOrEmpty() != false) return;
+            IntroduceFromTargets(msg.lookTargets);
+            AppendEvent(Find.TickManager.TicksAbs, StripTags(msg.text));
+        }
+
+        private void IntroduceFromTargets(LookTargets targets)
+        {
+            if (targets == null) return;
+            try
+            {
+                foreach (var t in targets.targets)
+                    if (t.Thing is Pawn p) IntroduceTag(p);
+            }
+            catch { }
         }
 
         public void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry, Pawn victimPawn = null)
@@ -1518,6 +1530,13 @@ namespace Firefly
                 if (isOpportunity) text = $"{label}: {FirstSentence(tooltip)}";
 
                 AppendEvent(Find.TickManager.TicksAbs, prefix.NullOrEmpty() ? text : $"{prefix} {text}");
+
+                try
+                {
+                    if (item is Letter letter)         IntroduceFromTargets(letter.lookTargets);
+                    else if (item is Message archMsg)  IntroduceFromTargets(archMsg.lookTargets);
+                }
+                catch { }
             }
             catch (Exception e)
             {
