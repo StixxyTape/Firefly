@@ -267,7 +267,7 @@ namespace Firefly
             string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n=== EVENTS ===\n";
             lock (_timelineBuffer) _timelineBuffer.Append(header);
 
-            if (GenDate.DaysPassed == 0)
+            if (_pastDays.Count == 0)
             {
                 try
                 {
