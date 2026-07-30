@@ -66,34 +66,6 @@ namespace Firefly
             Log.Message($"[Firefly] Incident curve: {curve} ({_comps.Count} delegate comps)");
         }
 
-        public override void ExposeData()
-        {
-            base.ExposeData();
-
-            // Materialize before saving so comp state is current.
-            if (Scribe.mode == LoadSaveMode.Saving)
-                EnsureComps();
-
-            Scribe_Values.Look(ref _activeCurve, "activeCurve");
-
-            // Rebuild comp instances first, then restore their saved state below.
-            if (Scribe.mode == LoadSaveMode.LoadingVars && !_activeCurve.NullOrEmpty())
-                BuildComps(_activeCurve);
-
-            if (_comps != null &&
-                (Scribe.mode == LoadSaveMode.Saving || Scribe.mode == LoadSaveMode.LoadingVars))
-            {
-                for (int i = 0; i < _comps.Count; i++)
-                {
-                    if (Scribe.EnterNode($"dc{i}"))
-                    {
-                        try { _comps[i].ExposeData(); } catch { }
-                        Scribe.ExitNode();
-                    }
-                }
-            }
-        }
-
         public override IEnumerable<FiringIncident> MakeIntervalIncidents(IIncidentTarget target)
         {
             EnsureComps();
