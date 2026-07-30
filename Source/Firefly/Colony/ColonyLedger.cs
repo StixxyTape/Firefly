@@ -227,7 +227,7 @@ namespace Firefly
                 Log.Message("[Firefly] Ledger initialized — skipping historical events.");
             }
 
-            _recordingDay = GenDate.DaysPassed;
+            _recordingDay = _pastDays.Count;
 
             long  snapshotTick = Find.TickManager.TicksAbs;
             float lon          = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
