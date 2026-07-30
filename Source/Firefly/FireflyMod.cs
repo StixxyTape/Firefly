@@ -114,32 +114,6 @@ namespace Firefly
 
             listing.Gap(18f);
             listing.GapLine();
-            listing.Label("Incident Curve  — which storyteller's pacing drives in-game events");
-
-            var curveRow = listing.GetRect(Text.LineHeight);
-            var curveBtnRect = curveRow.LeftPartPixels(220f);
-            var curveOptions = new List<(string Id, string Label)>
-            {
-                ("Phoebe",    "Phoebe Chillax"),
-                ("Cassandra", "Cassandra Classic"),
-                ("Randy",     "Randy Random"),
-                ("None",      "None (no incidents)"),
-            };
-            var curveMatch = curveOptions.Find(o => o.Id == Settings.IncidentCurve);
-            string currentLabel = !curveMatch.Label.NullOrEmpty() ? curveMatch.Label : Settings.IncidentCurve;
-            if (Widgets.ButtonText(curveBtnRect, $"{currentLabel}  ▼"))
-            {
-                var menuOptions = new List<FloatMenuOption>();
-                foreach (var (id, label) in curveOptions)
-                {
-                    var curveId = id;
-                    menuOptions.Add(new FloatMenuOption(label, () => Settings.IncidentCurve = curveId));
-                }
-                Find.WindowStack.Add(new FloatMenu(menuOptions));
-            }
-
-            listing.Gap(18f);
-            listing.GapLine();
             listing.Label($"Prompt size limit: {Settings.MaxPromptChars:N0} characters");
             listing.Label("A busy day's log is trimmed to this before being sent. Lower it if your model rejects long prompts or costs add up.");
             Settings.MaxPromptChars = Mathf.RoundToInt(
