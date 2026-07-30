@@ -293,10 +293,10 @@ namespace Firefly
         }
 
         // Accumulated hourly drain results — flushed once at midnight
-        private readonly List<(long Tick, string Text)> _drainedCombatLines = new List<(long, string)>();
-        private readonly HashSet<string>                _drainedCombatTexts = new HashSet<string>();
-        private readonly List<(long Tick, string Text)> _drainedHazardLines = new List<(long, string)>();
-        private readonly HashSet<string>                _drainedHazardTexts = new HashSet<string>();
+        private readonly List<(long Tick, string Text)> _drainedCombatLines     = new List<(long, string)>();
+        private readonly Dictionary<string, long>       _drainedCombatLastTick  = new Dictionary<string, long>();
+        private readonly List<(long Tick, string Text)> _drainedHazardLines     = new List<(long, string)>();
+        private readonly Dictionary<string, long>       _drainedHazardLastTick  = new Dictionary<string, long>();
 
         // Hourly drain — keeps combat outcome matching working without file writes.
         // Accumulates results in _drainedCombatLines / _drainedHazardLines until midnight.
@@ -304,16 +304,23 @@ namespace Firefly
         {
             var (combatSimple, _) = DrainCombatEvents();
             var hazardSummaries   = DrainHazardEvents();
+            long cooldown = GenDate.TicksPerHour * 3;
             if (combatSimple.Count > 0)
                 lock (_drainedCombatLines)
                     foreach (var line in combatSimple)
-                        if (_drainedCombatTexts.Add(line.Text))
+                        if (!_drainedCombatLastTick.TryGetValue(line.Text, out long last) || line.Tick - last >= cooldown)
+                        {
                             _drainedCombatLines.Add(line);
+                            _drainedCombatLastTick[line.Text] = line.Tick;
+                        }
             if (hazardSummaries.Count > 0)
                 lock (_drainedHazardLines)
                     foreach (var line in hazardSummaries)
-                        if (_drainedHazardTexts.Add(line.Text))
+                        if (!_drainedHazardLastTick.TryGetValue(line.Text, out long last) || line.Tick - last >= cooldown)
+                        {
                             _drainedHazardLines.Add(line);
+                            _drainedHazardLastTick[line.Text] = line.Tick;
+                        }
         }
 
         // Called at midnight — does one final drain then returns the accumulated content.
@@ -326,13 +333,13 @@ namespace Firefly
             {
                 combat = new List<(long, string)>(_drainedCombatLines);
                 _drainedCombatLines.Clear();
-                _drainedCombatTexts.Clear();
+                _drainedCombatLastTick.Clear();
             }
             lock (_drainedHazardLines)
             {
                 hazard = new List<(long, string)>(_drainedHazardLines);
                 _drainedHazardLines.Clear();
-                _drainedHazardTexts.Clear();
+                _drainedHazardLastTick.Clear();
             }
             return (BuildSectionString("COMBAT", combat, lon), BuildSectionString("HAZARDS", hazard, lon));
         }
@@ -907,8 +914,8 @@ namespace Firefly
             lock (_trackedPawnIds)   _trackedPawnIds.Clear();
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
-            lock (_drainedCombatLines) { _drainedCombatLines.Clear(); _drainedCombatTexts.Clear(); }
-            lock (_drainedHazardLines) { _drainedHazardLines.Clear(); _drainedHazardTexts.Clear(); }
+            lock (_drainedCombatLines) { _drainedCombatLines.Clear(); _drainedCombatLastTick.Clear(); }
+            lock (_drainedHazardLines) { _drainedHazardLines.Clear(); _drainedHazardLastTick.Clear(); }
         }
 
         // ── Pawn roster / tagging ─────────────────────────────────────────────
