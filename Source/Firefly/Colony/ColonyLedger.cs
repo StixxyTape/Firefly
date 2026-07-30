@@ -294,7 +294,9 @@ namespace Firefly
 
         // Accumulated hourly drain results — flushed once at midnight
         private readonly List<(long Tick, string Text)> _drainedCombatLines = new List<(long, string)>();
+        private readonly HashSet<string>                _drainedCombatTexts = new HashSet<string>();
         private readonly List<(long Tick, string Text)> _drainedHazardLines = new List<(long, string)>();
+        private readonly HashSet<string>                _drainedHazardTexts = new HashSet<string>();
 
         // Hourly drain — keeps combat outcome matching working without file writes.
         // Accumulates results in _drainedCombatLines / _drainedHazardLines until midnight.
@@ -303,9 +305,15 @@ namespace Firefly
             var (combatSimple, _) = DrainCombatEvents();
             var hazardSummaries   = DrainHazardEvents();
             if (combatSimple.Count > 0)
-                lock (_drainedCombatLines) _drainedCombatLines.AddRange(combatSimple);
+                lock (_drainedCombatLines)
+                    foreach (var line in combatSimple)
+                        if (_drainedCombatTexts.Add(line.Text))
+                            _drainedCombatLines.Add(line);
             if (hazardSummaries.Count > 0)
-                lock (_drainedHazardLines) _drainedHazardLines.AddRange(hazardSummaries);
+                lock (_drainedHazardLines)
+                    foreach (var line in hazardSummaries)
+                        if (_drainedHazardTexts.Add(line.Text))
+                            _drainedHazardLines.Add(line);
         }
 
         // Called at midnight — does one final drain then returns the accumulated content.
@@ -318,11 +326,13 @@ namespace Firefly
             {
                 combat = new List<(long, string)>(_drainedCombatLines);
                 _drainedCombatLines.Clear();
+                _drainedCombatTexts.Clear();
             }
             lock (_drainedHazardLines)
             {
                 hazard = new List<(long, string)>(_drainedHazardLines);
                 _drainedHazardLines.Clear();
+                _drainedHazardTexts.Clear();
             }
             return (BuildSectionString("COMBAT", combat, lon), BuildSectionString("HAZARDS", hazard, lon));
         }
@@ -897,8 +907,8 @@ namespace Firefly
             lock (_trackedPawnIds)   _trackedPawnIds.Clear();
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
-            lock (_drainedCombatLines) _drainedCombatLines.Clear();
-            lock (_drainedHazardLines) _drainedHazardLines.Clear();
+            lock (_drainedCombatLines) { _drainedCombatLines.Clear(); _drainedCombatTexts.Clear(); }
+            lock (_drainedHazardLines) { _drainedHazardLines.Clear(); _drainedHazardTexts.Clear(); }
         }
 
         // ── Pawn roster / tagging ─────────────────────────────────────────────
