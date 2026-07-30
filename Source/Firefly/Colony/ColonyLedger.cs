@@ -273,10 +273,9 @@ namespace Firefly
         {
             if (_dayHeaderWritten) return;
             _dayHeaderWritten = true;
-            string colony = map.info?.parent?.Label ?? "Unnamed Colony";
-            string season = GenLocalDate.Season(map).ToString();
-            int    year   = GenDate.Year(tick, lon);
-            string header = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{season}, Year {year}\n\n=== EVENTS ===\n";
+            string colony   = map.info?.parent?.Label ?? "Unnamed Colony";
+            string fullDate = GenDate.DateFullStringAt(tick, new UnityEngine.Vector2(lon, 0f));
+            string header   = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{fullDate}\n\n=== EVENTS ===\n";
             lock (_timelineBuffer) _timelineBuffer.Append(header);
 
             if (_pastDays.Count == 0)
