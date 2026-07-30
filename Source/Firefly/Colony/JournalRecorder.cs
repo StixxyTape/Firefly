@@ -186,9 +186,18 @@ namespace Firefly
         private void SendSummaryRequest(int day, string content)
         {
             Log.Message($"[Firefly] Sending Day {day} to LLM for summary...");
+
+            string prevSummary = _ledger?.PastDays
+                .LastOrDefault(d => d.Day == day - 1 && !d.Summary.NullOrEmpty())
+                ?.Summary;
+
+            string prompt = prevSummary.NullOrEmpty()
+                ? content
+                : $"=== PREVIOUS DAY SUMMARY (context only — do not summarise this) ===\n{prevSummary.Trim()}\n\n{content}";
+
             LLMClient.Send(
                 DailySystemPrompt(),
-                content,
+                prompt,
                 onSuccess: summary =>
                 {
                     ColonyLedger.Current?.SetDailySummary(day, summary);
