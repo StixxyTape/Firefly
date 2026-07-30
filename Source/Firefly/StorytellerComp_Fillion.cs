@@ -14,52 +14,91 @@ namespace Firefly
         }
     }
 
-    // Incident pacing only. The colony journal is driven by JournalRecorder from
-    // FireflyGameComponent — see the note there for why the two were separated.
     public class StorytellerComp_Fillion : StorytellerComp
     {
-        private List<StorytellerComp> _delegateComps;
-        private string _lastCurve;
+        private string _activeCurve;
+        private List<StorytellerComp> _comps;
 
-        private List<StorytellerComp> GetDelegateComps()
+        private void EnsureComps()
         {
-            string curve = FireflyMod.Settings.IncidentCurve ?? "Cassandra";
-            if (_delegateComps != null && _lastCurve == curve) return _delegateComps;
+            string curve = FireflyMod.Settings.IncidentCurve ?? "None";
+            if (_comps != null && _activeCurve == curve) return;
+            BuildComps(curve);
+        }
 
-            _lastCurve = curve;
-            _delegateComps = new List<StorytellerComp>();
-            if (curve == "None") return _delegateComps;
+        private void BuildComps(string curve)
+        {
+            _activeCurve = curve;
+            _comps = new List<StorytellerComp>();
+            if (curve == "None") return;
 
-            var def = DefDatabase<StorytellerDef>.GetNamedSilentFail(curve);
-            if (def?.comps == null) return _delegateComps;
+            var curveDef = DefDatabase<StorytellerDef>.GetNamedSilentFail(curve);
+            if (curveDef?.comps == null) return;
 
-            foreach (var p in def.comps)
+            // Fillion inherits DLC comps from BaseStoryteller via XML inheritance. Any
+            // comp type already on Fillion's own def would double-fire if we also delegate
+            // it, so skip types we're already running natively.
+            var fillionDef = DefDatabase<StorytellerDef>.GetNamed("Fillion");
+            var ownTypes = fillionDef?.comps?
+                .Select(p => p.compClass)
+                .Where(t => t != null)
+                .ToHashSet()
+                ?? new HashSet<Type>();
+
+            foreach (var p in curveDef.comps)
             {
+                if (p.compClass == null) continue;
+                if (ownTypes.Contains(p.compClass)) continue;
+
                 try
                 {
                     var comp = (StorytellerComp)Activator.CreateInstance(p.compClass);
                     comp.props = p;
                     comp.Initialize();
-                    _delegateComps.Add(comp);
+                    _comps.Add(comp);
                 }
                 catch (Exception e)
                 {
-                    Log.Warning($"[Firefly] Failed to init delegate comp {p.compClass?.Name}: {e.Message}");
+                    Log.Warning($"[Firefly] Failed to init delegate comp {p.compClass.Name}: {e.Message}");
                 }
             }
 
-            Log.Message($"[Firefly] Incident curve: {curve} ({_delegateComps.Count} comps loaded)");
-            return _delegateComps;
+            Log.Message($"[Firefly] Incident curve: {curve} ({_comps.Count} delegate comps)");
         }
 
-        // Called once per incident target per storyteller tick. Delegates unconditionally: the
-        // vanilla comps accumulate their own MTB/interval state and expect every call.
+        public override void ExposeData()
+        {
+            base.ExposeData();
+
+            // Materialize before saving so comp state is current.
+            if (Scribe.mode == LoadSaveMode.Saving)
+                EnsureComps();
+
+            Scribe_Values.Look(ref _activeCurve, "activeCurve");
+
+            // Rebuild comp instances first, then restore their saved state below.
+            if (Scribe.mode == LoadSaveMode.LoadingVars && !_activeCurve.NullOrEmpty())
+                BuildComps(_activeCurve);
+
+            if (_comps != null &&
+                (Scribe.mode == LoadSaveMode.Saving || Scribe.mode == LoadSaveMode.LoadingVars))
+            {
+                for (int i = 0; i < _comps.Count; i++)
+                {
+                    if (Scribe.EnterNode($"dc{i}"))
+                    {
+                        try { _comps[i].ExposeData(); } catch { }
+                        Scribe.ExitNode();
+                    }
+                }
+            }
+        }
+
         public override IEnumerable<FiringIncident> MakeIntervalIncidents(IIncidentTarget target)
         {
-            foreach (var comp in GetDelegateComps())
+            EnsureComps();
+            foreach (var comp in _comps)
             {
-                // Materialize inside the try — MakeIntervalIncidents returns an iterator whose body
-                // runs lazily, so exceptions thrown during enumeration escape a guard on the call site.
                 List<FiringIncident> incidents = null;
                 try { incidents = comp.MakeIntervalIncidents(target)?.ToList(); } catch { }
                 if (incidents == null) continue;
