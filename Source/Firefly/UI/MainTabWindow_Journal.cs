@@ -353,7 +353,7 @@ namespace Firefly
             {
                 if (quest.State == QuestState.NotYetAccepted)
                 {
-                    int ticks = quest.TicksUntilAcceptanceExpiry;
+                    int ticks = quest.TicksUntilExpiry;
                     if (ticks > 0)
                     {
                         float days = ticks / (float)GenDate.TicksPerDay;
