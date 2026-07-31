@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using RimWorld;
 using UnityEngine;
@@ -12,6 +13,7 @@ namespace Firefly
         // Special nav IDs
         private const int NavToday  = -1;
         private const int NavColony = -2;
+        private const int NavQuests = -3;
 
         private const float NavW  = 148f;
         private const float Pad   = 5f;
@@ -25,6 +27,7 @@ namespace Firefly
         private static readonly Color AcHazards = new Color(0.84f, 0.62f, 0.22f);
         private static readonly Color AcHistory = new Color(0.92f, 0.78f, 0.38f);
         private static readonly Color AcToday   = new Color(1.00f, 0.88f, 0.28f);
+        private static readonly Color AcQuests  = new Color(0.68f, 0.48f, 0.88f);
 
         private int    _nav     = NavToday;
         private string _section = "EVENTS";
@@ -76,12 +79,13 @@ namespace Firefly
         private void DrawNav(Rect rect, bool hasToday, int today, IReadOnlyList<DailyRecord> past)
         {
             const float rowH = 26f;
-            int rows = (hasToday ? 1 : 0) + 1 + (past.Count > 0 ? past.Count + 1 : 0);
+            int rows = (hasToday ? 1 : 0) + 2 + (past.Count > 0 ? past.Count + 1 : 0);
             var view = new Rect(0f, 0f, rect.width - 16f, Mathf.Max(rows * rowH, rect.height));
             Widgets.BeginScrollView(rect, ref _navScroll, view);
 
             float y = 0f;
             y = NavRow(y, view.width, rowH, NavColony, "Colony", "◆", AcHistory);
+            y = NavRow(y, view.width, rowH, NavQuests, "Quests", "◆", AcQuests);
 
             if (hasToday || past.Count > 0)
             {
@@ -155,6 +159,7 @@ namespace Firefly
         {
             if (_nav == NavToday && hasToday) { DrawToday(rect, ledger, today); return; }
             if (_nav == NavColony)            { DrawColony(rect, ledger);        return; }
+            if (_nav == NavQuests)            { DrawQuests(rect);                return; }
 
             var rec = past.FirstOrDefault(d => d.Day == _nav);
             if (rec != null) DrawDay(rect, rec);
@@ -241,6 +246,134 @@ namespace Firefly
             secs.Add(("LLM OUT", new Color(0.45f, 0.75f, 0.65f), summaryText));
 
             DrawSectioned(rect, secs, $"day{record.Day}", AcEvents, $"DAY {record.Day}");
+        }
+
+        // ── Quests view ───────────────────────────────────────────────────────
+
+        private void DrawQuests(Rect rect)
+        {
+            string content = BuildQuestsContent();
+            var secs = new List<(string Name, Color Ac, string Text)>
+            {
+                ("QUESTS", AcQuests, content),
+            };
+            DrawSectioned(rect, secs, "quests", AcQuests, "QUESTS");
+        }
+
+        private static string BuildQuestsContent()
+        {
+            var mgr = Find.QuestManager;
+            if (mgr == null) return "(No quest manager available.)";
+
+            var all = mgr.QuestsListForReading;
+            if (all.NullOrEmpty()) return "(No quests yet.)";
+
+            // Top-level quests only (no parent), not hidden
+            var topLevel = all
+                .Where(q => q.ParentQuest == null && !q.hidden)
+                .OrderBy(q => q.State == QuestState.Ongoing        ? 0 :
+                              q.State == QuestState.NotYetAccepted ? 1 : 2)
+                .ThenBy(q => q.name.ToString())
+                .ToList();
+
+            if (topLevel.Count == 0) return "(No quests yet.)";
+
+            var sb = new StringBuilder();
+            foreach (var quest in topLevel)
+                AppendQuestBlock(sb, quest, all, 0);
+
+            return sb.ToString().TrimEnd();
+        }
+
+        private static void AppendQuestBlock(StringBuilder sb, Quest quest, List<Quest> all, int depth)
+        {
+            string pad  = depth > 0 ? new string(' ', depth * 4) : "";
+            string name = ColonyLedger.StripTags(quest.name.ToString()).Trim();
+
+            string status = QuestStatusLabel(quest);
+            string timing = QuestTimingLabel(quest);
+            string header = timing.NullOrEmpty()
+                ? $"{name} ({status}):"
+                : $"{name} ({status} — {timing}):";
+
+            sb.AppendLine($"{pad}{header}");
+
+            // Description
+            try
+            {
+                string desc = ColonyLedger.StripTags(quest.description.ToString()).Trim();
+                if (!desc.NullOrEmpty())
+                    foreach (var line in desc.Split('\n'))
+                    {
+                        string l = line.Trim();
+                        if (!l.NullOrEmpty()) sb.AppendLine($"{pad}  {l}");
+                    }
+            }
+            catch { }
+
+            // Reward choices
+            try
+            {
+                foreach (var part in quest.PartsListForReading.OfType<QuestPart_Choice>())
+                    foreach (var choice in part.choices)
+                    {
+                        try
+                        {
+                            string label = ColonyLedger.StripTags(choice.Label ?? "").Trim();
+                            if (!label.NullOrEmpty())
+                                sb.AppendLine($"{pad}  Accept for: {label}");
+                        }
+                        catch { }
+                    }
+            }
+            catch { }
+
+            sb.AppendLine();
+
+            // Child quests indented
+            foreach (var child in all.Where(q => q.ParentQuest == quest && !q.hidden))
+                AppendQuestBlock(sb, child, all, depth + 1);
+        }
+
+        private static string QuestStatusLabel(Quest quest)
+        {
+            switch (quest.State)
+            {
+                case QuestState.NotYetAccepted:   return "Available";
+                case QuestState.Ongoing:           return "Active";
+                case QuestState.EndedSuccess:      return "Completed";
+                case QuestState.EndedFail:         return "Failed";
+                default:                           return "Historical";
+            }
+        }
+
+        private static string QuestTimingLabel(Quest quest)
+        {
+            try
+            {
+                if (quest.State == QuestState.NotYetAccepted)
+                {
+                    int ticks = quest.TicksUntilAcceptanceExpiry;
+                    if (ticks > 0)
+                    {
+                        float days = ticks / (float)GenDate.TicksPerDay;
+                        return days < 1f
+                            ? $"Expires in {Mathf.RoundToInt(days * 24f)}h"
+                            : $"Expires in {days:F1} days";
+                    }
+                }
+                else if (quest.State == QuestState.Ongoing)
+                {
+                    int ticks = quest.TicksSinceAccepted;
+                    if (ticks > 0)
+                    {
+                        int days = ticks / GenDate.TicksPerDay;
+                        return days == 0 ? "Accepted today" : $"Accepted {days} day{(days == 1 ? "" : "s")} ago";
+                    }
+                }
+            }
+            catch { }
+            return "";
         }
 
         // ── Sectioned content renderer ────────────────────────────────────────
