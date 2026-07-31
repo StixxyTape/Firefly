@@ -119,13 +119,6 @@ namespace Firefly
             Settings.MaxPromptChars = Mathf.RoundToInt(
                 listing.Slider(Settings.MaxPromptChars, 4000f, 120000f) / 1000f) * 1000;
 
-            listing.Gap(18f);
-            listing.GapLine();
-            listing.Label("Daily Summary Prompt  (optional)");
-            listing.Label("Replaces the built-in daily summary prompt. The colony history prompt is not affected. Leave blank to use the default.");
-            var promptRect = listing.GetRect(90f);
-            Settings.CustomPrompt = Widgets.TextArea(promptRect, Settings.CustomPrompt ?? "");
-
             listing.End();
         }
     }

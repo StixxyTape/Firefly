@@ -9,7 +9,6 @@ namespace Firefly
         public string ApiKey = "";
         public string BaseUrl = "https://openrouter.ai/api/v1";
         public string Model = "xiaomi/mimo-v2.5";
-        public string CustomPrompt = "";
         public int MaxPromptChars = DefaultMaxPromptChars;
 
         public override void ExposeData()
@@ -17,7 +16,6 @@ namespace Firefly
             Scribe_Values.Look(ref ApiKey, "apiKey", "");
             Scribe_Values.Look(ref BaseUrl, "baseUrl", "https://openrouter.ai/api/v1");
             Scribe_Values.Look(ref Model, "model", "xiaomi/mimo-v2.5");
-            Scribe_Values.Look(ref CustomPrompt, "customPrompt", "");
             Scribe_Values.Look(ref MaxPromptChars, "maxPromptChars", DefaultMaxPromptChars);
 
             if (Scribe.mode == LoadSaveMode.LoadingVars && MaxPromptChars < 2000)

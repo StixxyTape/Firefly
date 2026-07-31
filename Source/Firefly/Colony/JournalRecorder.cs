@@ -113,21 +113,21 @@ namespace Firefly
 
         private static readonly string ArcSystemPrompt =
             "You are Fillion, the keeper of a colony's journal. You receive the current colony " +
-            "history (if one exists) followed by recent daily summaries that have not yet been " +
-            "folded in.\n\n" +
+            "history (if one exists) followed by recent daily summaries not yet folded in.\n\n" +
             "Rewrite the colony history as a single updated document: 10 lines capturing the " +
-            "most important narrative moments, character arcs, ongoing story threads, and the " +
-            "overall shape of the colony's life so far. Carry forward what still matters from " +
-            "the existing history and weave in what's new.\n\n" +
-            "No lists, no timestamps, no section headers — just a flowing narrative, plain and " +
-            "warm, as if telling someone who's been away everything they need to know about " +
-            "this colony's story.";
+            "colony's story so far. Carry forward what still matters and weave in what's new.\n\n" +
+            "Give the words to events that changed something for good — deaths, births, quests " +
+            "won or lost, titles and status earned, factions turned friend or enemy, major " +
+            "discoveries, and the arcs between colonists. Routine — daily labour, wildlife " +
+            "scraps, chitchat, weather — is the rhythm underneath; keep a little for texture, " +
+            "but never let it crowd out a real event. A rare event outweighs a frequent one, " +
+            "even when the routine filled more of the log.\n\n" +
+            "Where a story thread is still unresolved, leave it open on the page so its future " +
+            "is felt — a quest not yet answered, a signal not yet followed, a rift not yet healed.\n\n" +
+            "No lists, no timestamps, no section headers — just flowing narrative, plain and " +
+            "warm, as if telling someone who's been away everything they need to know.";
 
-        private static string DailySystemPrompt()
-        {
-            string custom = FireflyMod.Settings.CustomPrompt;
-            return !custom.NullOrEmpty() ? custom : SummarySystemPrompt;
-        }
+        private static string DailySystemPrompt() => SummarySystemPrompt;
 
         public void WriteTimeline(Map map, int day = -1)
         {
