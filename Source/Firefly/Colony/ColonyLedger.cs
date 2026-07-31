@@ -956,10 +956,64 @@ namespace Firefly
             bool isNew;
             lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
             if (!isNew) return "";
-            string name       = PawnFullName(pawn);
-            string descriptor = GetPawnDescriptor(pawn);
-            lock (_trackedPawnLines) { _trackedPawnLines.Add((name, descriptor)); }
-            return $" ({descriptor})";
+            string category = GetPawnDescriptor(pawn);
+            string line     = BuildRosterLine(pawn);
+            lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
+            return $" ({category})";
+        }
+
+        private static string BuildRosterLine(Pawn pawn)
+        {
+            string fullName = PawnFullName(pawn);
+
+            var attrs = new List<string>();
+
+            if (pawn.gender != Gender.None)
+                attrs.Add(pawn.gender.ToString().ToLower());
+
+            int age = pawn.ageTracker?.AgeBiologicalYears ?? 0;
+            if (age > 0) attrs.Add(age.ToString());
+
+            string species = pawn.def?.label;
+            if (!species.NullOrEmpty()) attrs.Add(species);
+
+            try
+            {
+                var role = pawn.ideo?.Ideo?.GetRole(pawn);
+                if (role != null)
+                {
+                    string ideoName = pawn.ideo.Ideo.name;
+                    attrs.Add(ideoName.NullOrEmpty() ? role.LabelCap : $"{role.LabelCap} of {ideoName}");
+                }
+            }
+            catch { }
+
+            try
+            {
+                var titles = pawn.royalty?.AllTitlesForReading;
+                if (titles != null)
+                    foreach (var t in titles)
+                        if (t?.def != null)
+                        {
+                            string factionName = t.faction?.Name;
+                            attrs.Add(factionName.NullOrEmpty() ? t.def.LabelCap : $"{t.def.LabelCap} of {factionName}");
+                        }
+            }
+            catch { }
+
+            string callName = null;
+            if (pawn.Name is NameTriple nt)
+            {
+                bool hasNick = !nt.Nick.NullOrEmpty() && nt.Nick != nt.First && nt.Nick != nt.Last;
+                callName = hasNick ? nt.Nick : nt.First;
+            }
+            else
+                callName = pawn.LabelShort;
+
+            string line = fullName;
+            if (attrs.Count > 0) line += $" — {string.Join(", ", attrs)}";
+            if (!callName.NullOrEmpty()) line += $" — refer to as \"{callName}\" only";
+            return line;
         }
 
         public string BuildPawnRosterSection()
@@ -976,8 +1030,8 @@ namespace Firefly
                 foreach (var group in groups)
                 {
                     sb.AppendLine(RosterCategoryHeader(group.Key) + ":");
-                    foreach (var (name, _) in group)
-                        sb.AppendLine($"  - {name}");
+                    foreach (var (line, _) in group)
+                        sb.AppendLine($"  - {line}");
                 }
                 return sb.ToString();
             }
