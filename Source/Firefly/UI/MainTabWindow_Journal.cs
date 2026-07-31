@@ -270,7 +270,7 @@ namespace Firefly
 
             // Top-level quests only (no parent), not hidden
             var topLevel = all
-                .Where(q => q.ParentQuest == null && !q.hidden)
+                .Where(q => q.parent == null && !q.hidden)
                 .OrderBy(q => q.State == QuestState.Ongoing        ? 0 :
                               q.State == QuestState.NotYetAccepted ? 1 : 2)
                 .ThenBy(q => q.name.ToString())
@@ -311,27 +311,38 @@ namespace Firefly
             }
             catch { }
 
-            // Reward choices
+            // Reward choices — use DescriptionPart from each choice's quest parts
             try
             {
-                foreach (var part in quest.PartsListForReading.OfType<QuestPart_Choice>())
-                    foreach (var choice in part.choices)
+                foreach (var cp in quest.PartsListForReading.OfType<QuestPart_Choice>())
+                {
+                    for (int ci = 0; ci < cp.choices.Count; ci++)
                     {
-                        try
+                        var choice = cp.choices[ci];
+                        var descs = new List<string>();
+                        foreach (var qp in choice.questParts)
                         {
-                            string label = ColonyLedger.StripTags(choice.Label ?? "").Trim();
-                            if (!label.NullOrEmpty())
-                                sb.AppendLine($"{pad}  Accept for: {label}");
+                            try
+                            {
+                                string d = ColonyLedger.StripTags(qp.DescriptionPart ?? "").Trim();
+                                if (!d.NullOrEmpty()) descs.Add(d);
+                            }
+                            catch { }
                         }
-                        catch { }
+                        string choiceLabel = descs.Count > 0
+                            ? string.Join(", ", descs)
+                            : cp.choices.Count > 1 ? $"Option {ci + 1}" : null;
+                        if (!choiceLabel.NullOrEmpty())
+                            sb.AppendLine($"{pad}  Accept for: {choiceLabel}");
                     }
+                }
             }
             catch { }
 
             sb.AppendLine();
 
             // Child quests indented
-            foreach (var child in all.Where(q => q.ParentQuest == quest && !q.hidden))
+            foreach (var child in all.Where(q => q.parent == quest && !q.hidden))
                 AppendQuestBlock(sb, child, all, depth + 1);
         }
 
@@ -342,7 +353,7 @@ namespace Firefly
                 case QuestState.NotYetAccepted:   return "Available";
                 case QuestState.Ongoing:           return "Active";
                 case QuestState.EndedSuccess:      return "Completed";
-                case QuestState.EndedFail:         return "Failed";
+                case QuestState.EndedFailed:       return "Failed";
                 default:                           return "Historical";
             }
         }
