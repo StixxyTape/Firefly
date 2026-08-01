@@ -162,10 +162,14 @@ namespace Firefly
                         timelineContent = rosterSection + "\n" + timelineContent;
                 }
 
+                string questRaw    = MainTabWindow_Journal.BuildQuestsContent();
+                string questContent = questRaw.NullOrEmpty() ? "" : "=== QUESTS ===\n" + questRaw;
+
                 string fullContent = string.Concat(
                     timelineContent,
                     combatContent.NullOrEmpty() ? "" : "\n" + combatContent,
-                    hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent);
+                    hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent,
+                    questContent.NullOrEmpty() ? "" : "\n" + questContent);
 
                 if (fullContent.NullOrEmpty()) return;
 

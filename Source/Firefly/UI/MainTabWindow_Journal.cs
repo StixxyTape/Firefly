@@ -260,7 +260,7 @@ namespace Firefly
             DrawSectioned(rect, secs, "quests", AcQuests, "QUESTS");
         }
 
-        private static string BuildQuestsContent()
+        internal static string BuildQuestsContent()
         {
             var mgr = Find.QuestManager;
             if (mgr == null) return "(No quest manager available.)";
@@ -285,7 +285,7 @@ namespace Firefly
             return sb.ToString().TrimEnd();
         }
 
-        private static void AppendQuestBlock(StringBuilder sb, Quest quest, List<Quest> all, int depth)
+        internal static void AppendQuestBlock(StringBuilder sb, Quest quest, List<Quest> all, int depth)
         {
             string pad  = depth > 0 ? new string(' ', depth * 4) : "";
             string name = ColonyLedger.StripTags(quest.name.ToString()).Trim();
@@ -346,7 +346,7 @@ namespace Firefly
                 AppendQuestBlock(sb, child, all, depth + 1);
         }
 
-        private static string QuestStatusLabel(Quest quest)
+        internal static string QuestStatusLabel(Quest quest)
         {
             switch (quest.State)
             {
@@ -358,7 +358,7 @@ namespace Firefly
             }
         }
 
-        private static string QuestTimingLabel(Quest quest)
+        internal static string QuestTimingLabel(Quest quest)
         {
             try
             {
