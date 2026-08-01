@@ -1575,7 +1575,7 @@ namespace Firefly
             var mentionedList = mentioned.ToList();
             var sb = new StringBuilder();
             foreach (var q in topLevel)
-                UI.MainTabWindow_Journal.AppendQuestBlock(sb, q, mentionedList, 0);
+                MainTabWindow_Journal.AppendQuestBlock(sb, q, mentionedList, 0);
             return sb.ToString().TrimEnd();
         }
 
