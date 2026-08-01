@@ -182,12 +182,15 @@ namespace Firefly
             string combatContent = ledger.GetCurrentCombatContent(lon);
             string hazardContent = ledger.GetCurrentHazardContent(lon);
 
+            string todayQuestContent = ledger.BuildMentionedQuestsSnapshot();
+
             var secs = new List<(string Name, Color Ac, string Text)>
             {
                 ("EVENTS", AcEvents, eventsContent),
             };
-            if (!combatContent.NullOrEmpty())  secs.Add(("COMBAT",  AcCombat,  combatContent));
-            if (!hazardContent.NullOrEmpty())  secs.Add(("HAZARDS", AcHazards, hazardContent));
+            if (!combatContent.NullOrEmpty())       secs.Add(("COMBAT",  AcCombat,  combatContent));
+            if (!hazardContent.NullOrEmpty())       secs.Add(("HAZARDS", AcHazards, hazardContent));
+            if (!todayQuestContent.NullOrEmpty())   secs.Add(("QUESTS",  AcQuests,  todayQuestContent));
 
             DrawSectioned(rect, secs, $"today{day}", AcToday, $"DAY {day}  —  IN PROGRESS");
         }
@@ -239,9 +242,10 @@ namespace Firefly
                 ("SUMMARY", hasSummary ? AcSummary : Color.gray, summaryText),
                 ("EVENTS",  AcEvents,  eventsContent),
             };
-            if (!statusContent.NullOrEmpty())  secs.Add(("STATUS",  AcStatus,  statusContent));
-            if (!combatContent.NullOrEmpty())  secs.Add(("COMBAT",  AcCombat,  combatContent));
-            if (!hazardContent.NullOrEmpty())  secs.Add(("HAZARDS", AcHazards, hazardContent));
+            if (!statusContent.NullOrEmpty())            secs.Add(("STATUS",  AcStatus,  statusContent));
+            if (!combatContent.NullOrEmpty())            secs.Add(("COMBAT",  AcCombat,  combatContent));
+            if (!hazardContent.NullOrEmpty())            secs.Add(("HAZARDS", AcHazards, hazardContent));
+            if (!record.QuestSnapshot.NullOrEmpty())     secs.Add(("QUESTS",  AcQuests,  record.QuestSnapshot));
             secs.Add(("LLM IN",  new Color(0.65f, 0.55f, 0.80f), record.Timeline ?? ""));
             secs.Add(("LLM OUT", new Color(0.45f, 0.75f, 0.65f), summaryText));
 

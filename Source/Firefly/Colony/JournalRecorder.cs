@@ -152,6 +152,7 @@ namespace Firefly
                 string rosterSection   = _ledger.BuildPawnRosterSection();
                 string timelineContent = _ledger.GetCurrentDayContent();
 
+                string questSnapshot = _ledger.BuildMentionedQuestsSnapshot();
                 _ledger.Clear();
 
                 // Insert pawn roster between the day header and === EVENTS ===
@@ -165,8 +166,7 @@ namespace Firefly
                         timelineContent = rosterSection + "\n" + timelineContent;
                 }
 
-                string questRaw    = MainTabWindow_Journal.BuildQuestsContent();
-                string questContent = questRaw.NullOrEmpty() ? "" : "=== QUESTS ===\n" + questRaw;
+                string questContent = questSnapshot.NullOrEmpty() ? "" : "=== QUESTS ===\n" + questSnapshot;
 
                 string fullContent = string.Concat(
                     timelineContent,
@@ -178,7 +178,7 @@ namespace Firefly
 
                 _lastArchivedDay = day;
 
-                var record = new DailyRecord { Day = day, Timeline = fullContent };
+                var record = new DailyRecord { Day = day, Timeline = fullContent, QuestSnapshot = questSnapshot };
                 _ledger.AddDailyRecord(record);
 
                 SendSummaryRequest(day, fullContent);

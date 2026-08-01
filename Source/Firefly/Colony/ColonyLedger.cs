@@ -92,6 +92,7 @@ namespace Firefly
         private readonly HashSet<string>         _trackedPawnIds     = new HashSet<string>();
         private readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
         private readonly StringBuilder           _timelineBuffer     = new StringBuilder();
+        private readonly HashSet<int>            _mentionedQuestIds  = new HashSet<int>();
 
 
         // ── Capture methods ───────────────────────────────────────────────────
@@ -734,8 +735,9 @@ namespace Firefly
             var health    = saving ? _prevDayHealth.ToDictionary(kv => kv.Key, kv => kv.Value.Serialize()) : null;
             var battles   = saving ? _announcedBattleOrder.ToList() : null;
             var hazards   = saving ? _announcedHazards.Select(h => $"{h.Item1}{FieldSep}{h.Item2}").ToList() : null;
-            var pawnIds   = saving ? _trackedPawnIds.ToList() : null;
-            var pawnLines = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
+            var pawnIds      = saving ? _trackedPawnIds.ToList() : null;
+            var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
+            var questIds     = saving ? _mentionedQuestIds.ToList() : null;
 
             Scribe_Values.Look(ref _recordingDay,   "recordingDay",   0);
             Scribe_Values.Look(ref _initialized,    "initialized",    false);
@@ -748,8 +750,9 @@ namespace Firefly
             Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref battles,            "announcedBattles", LookMode.Value);
             Scribe_Collections.Look(ref hazards,            "announcedHazards", LookMode.Value);
-            Scribe_Collections.Look(ref pawnIds,            "trackedPawnIds",   LookMode.Value);
-            Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines", LookMode.Value);
+            Scribe_Collections.Look(ref pawnIds,            "trackedPawnIds",    LookMode.Value);
+            Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines",  LookMode.Value);
+            Scribe_Collections.Look(ref questIds,           "mentionedQuestIds", LookMode.Value);
 
             if (Scribe.mode != LoadSaveMode.LoadingVars) return;
 
@@ -780,6 +783,10 @@ namespace Firefly
             _trackedPawnIds.Clear();
             if (pawnIds != null)
                 foreach (var id in pawnIds) _trackedPawnIds.Add(id);
+
+            _mentionedQuestIds.Clear();
+            if (questIds != null)
+                foreach (var id in questIds) _mentionedQuestIds.Add(id);
 
             _trackedPawnLines.Clear();
             if (pawnLines != null)
@@ -922,6 +929,7 @@ namespace Firefly
             // _announcedBattles intentionally kept — battle IDs are unique per game
 
             _dayHeaderWritten = false;
+            _mentionedQuestIds.Clear();
             lock (_trackedPawnIds)   _trackedPawnIds.Clear();
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
@@ -1532,6 +1540,45 @@ namespace Firefly
             return role;
         }
 
+        // ── Quest tracking ────────────────────────────────────────────────────
+
+        private void RecordMentionedQuest(Quest quest)
+        {
+            if (quest == null) return;
+            _mentionedQuestIds.Add(quest.id);
+            if (quest.parent != null) _mentionedQuestIds.Add(quest.parent.id);
+        }
+
+        public string BuildMentionedQuestsSnapshot()
+        {
+            if (_mentionedQuestIds.Count == 0) return null;
+            var mgr = Find.QuestManager;
+            if (mgr == null) return null;
+
+            var all      = mgr.QuestsListForReading;
+            var mentioned = new HashSet<Quest>(
+                all.Where(q => _mentionedQuestIds.Contains(q.id)));
+
+            // Pull in children of mentioned quests even if they weren't directly logged
+            foreach (var q in all)
+                if (q.parent != null && mentioned.Contains(q.parent))
+                    mentioned.Add(q);
+
+            var topLevel = mentioned
+                .Where(q => q.parent == null || !mentioned.Contains(q.parent))
+                .OrderBy(q => q.State == QuestState.Ongoing        ? 0 :
+                              q.State == QuestState.NotYetAccepted ? 1 : 2)
+                .ToList();
+
+            if (topLevel.Count == 0) return null;
+
+            var mentionedList = mentioned.ToList();
+            var sb = new StringBuilder();
+            foreach (var q in topLevel)
+                UI.MainTabWindow_Journal.AppendQuestBlock(sb, q, mentionedList, 0);
+            return sb.ToString().TrimEnd();
+        }
+
         // ── Archive / log entry capture ───────────────────────────────────────
 
         public void CaptureArchiveEntry(IArchivable item)
@@ -1572,6 +1619,17 @@ namespace Firefly
                 }
 
                 if (text.NullOrEmpty()) return;
+
+                // Track which quests were referenced today via their letters
+                if (item is Letter trackedLetter)
+                {
+                    try
+                    {
+                        var q = Traverse.Create(trackedLetter).Field("quest").GetValue<Quest>();
+                        RecordMentionedQuest(q);
+                    }
+                    catch { }
+                }
 
                 if (label != null && (
                     label.IndexOf("role deactivated", StringComparison.OrdinalIgnoreCase) >= 0 ||
