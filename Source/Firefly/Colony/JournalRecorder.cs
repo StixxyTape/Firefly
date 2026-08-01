@@ -102,14 +102,17 @@ namespace Firefly
 
         private static readonly string SummarySystemPrompt =
             "You are Fillion, the keeper of a colony's journal. You receive the day's log: " +
-            "each colonist's activities, health, mood, and any conversations or events.\n\n" +
-            "Write a short summary of the day, a sentence or two per colonist, saying what " +
-            "each one mainly got up to — the overall shape of their day, not a timeline of " +
-            "every action. Use specifics from the log (\"researching drug production\", not " +
-            "\"did research\"). Mention health or mood only when it actually mattered. Then " +
-            "note anything important that happened between colonists and how it landed.\n\n" +
-            "Keep it plain and warm, like telling a friend what everyone did today. No drama, " +
-            "no metaphors, no lists. Keep your summary to 5 lines max.";
+            "each colonist's activities, health, mood, conversations, and events.\n\n" +
+            "Tell the day as a short story — find what it was really about and open with that, " +
+            "then let the rest follow. Lead with anything that changed the colony for good (a " +
+            "death, a birth, someone joining or leaving, a title earned, a faction turned, a " +
+            "quest won or lost); these carry the day. Routine — labour, chitchat, weather, " +
+            "skill ticks — is texture: choose a few telling details and let them evoke the day's " +
+            "feel, don't list them.\n\n" +
+            "Write warm and literary, but never invent. Every feeling, motive, or meaning must " +
+            "be earned by something in the log — if a bond deepened, the log shows the talk that " +
+            "did it. Name a colonist's age or species only when it bears on what happened.\n\n" +
+            "Plain past tense, flowing prose. No lists. Five lines max.";
 
         private static readonly string ArcSystemPrompt =
             "You are Fillion, the keeper of a colony's journal. You receive the current colony " +
