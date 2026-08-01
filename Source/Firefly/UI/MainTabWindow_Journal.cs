@@ -13,7 +13,6 @@ namespace Firefly
         // Special nav IDs
         private const int NavToday  = -1;
         private const int NavColony = -2;
-        private const int NavQuests = -3;
 
         private const float NavW  = 148f;
         private const float Pad   = 5f;
@@ -79,13 +78,12 @@ namespace Firefly
         private void DrawNav(Rect rect, bool hasToday, int today, IReadOnlyList<DailyRecord> past)
         {
             const float rowH = 26f;
-            int rows = (hasToday ? 1 : 0) + 2 + (past.Count > 0 ? past.Count + 1 : 0);
+            int rows = (hasToday ? 1 : 0) + 1 + (past.Count > 0 ? past.Count + 1 : 0);
             var view = new Rect(0f, 0f, rect.width - 16f, Mathf.Max(rows * rowH, rect.height));
             Widgets.BeginScrollView(rect, ref _navScroll, view);
 
             float y = 0f;
             y = NavRow(y, view.width, rowH, NavColony, "Colony", "◆", AcHistory);
-            y = NavRow(y, view.width, rowH, NavQuests, "Quests", "◆", AcQuests);
 
             if (hasToday || past.Count > 0)
             {
@@ -159,7 +157,6 @@ namespace Firefly
         {
             if (_nav == NavToday && hasToday) { DrawToday(rect, ledger, today); return; }
             if (_nav == NavColony)            { DrawColony(rect, ledger);        return; }
-            if (_nav == NavQuests)            { DrawQuests(rect);                return; }
 
             var rec = past.FirstOrDefault(d => d.Day == _nav);
             if (rec != null) DrawDay(rect, rec);
@@ -253,41 +250,6 @@ namespace Firefly
         }
 
         // ── Quests view ───────────────────────────────────────────────────────
-
-        private void DrawQuests(Rect rect)
-        {
-            string content = BuildQuestsContent();
-            var secs = new List<(string Name, Color Ac, string Text)>
-            {
-                ("QUESTS", AcQuests, content),
-            };
-            DrawSectioned(rect, secs, "quests", AcQuests, "QUESTS");
-        }
-
-        internal static string BuildQuestsContent()
-        {
-            var mgr = Find.QuestManager;
-            if (mgr == null) return "(No quest manager available.)";
-
-            var all = mgr.QuestsListForReading;
-            if (all.NullOrEmpty()) return "(No quests yet.)";
-
-            // Top-level quests only (no parent), not hidden
-            var topLevel = all
-                .Where(q => q.parent == null && !q.hidden)
-                .OrderBy(q => q.State == QuestState.Ongoing        ? 0 :
-                              q.State == QuestState.NotYetAccepted ? 1 : 2)
-                .ThenBy(q => q.name.ToString())
-                .ToList();
-
-            if (topLevel.Count == 0) return "(No quests yet.)";
-
-            var sb = new StringBuilder();
-            foreach (var quest in topLevel)
-                AppendQuestBlock(sb, quest, all, 0);
-
-            return sb.ToString().TrimEnd();
-        }
 
         internal static void AppendQuestBlock(StringBuilder sb, Quest quest, List<Quest> all, int depth)
         {
