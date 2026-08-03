@@ -73,6 +73,7 @@ namespace Firefly
         private Dictionary<string, PawnHealthSnapshot> _prevDayHealth    = new Dictionary<string, PawnHealthSnapshot>();
         private Dictionary<string, string>             _prevDayRelations = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevDaySkills    = new Dictionary<string, string>();
+        private Dictionary<string, string>             _pawnEventLeaders = new Dictionary<string, string>();
 
         private float _prevColonyFoodDays = -1f;
         private int   _prevColonyMedicine = -1;
@@ -232,7 +233,9 @@ namespace Firefly
         private static readonly FieldInfo _recipientField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "recipient");
         private static readonly FieldInfo _interactionDefField =
-            AccessTools.Field(typeof(PlayLogEntry_Interaction), "interactionDef");
+            AccessTools.Field(typeof(PlayLogEntry_Interaction), "intDef");
+        private static readonly HashSet<string> _blockedInteractions = new HashSet<string>
+            { "Chitchat", "DeepTalk", "Nuzzle", "AnimalChat" };
         private static readonly FieldInfo _logEntryTicksAbsField =
             AccessTools.Field(typeof(LogEntry), "ticksAbs");
 
@@ -900,8 +903,9 @@ namespace Firefly
             Scribe_Collections.Look(ref _pastDays,          "pastDays",         LookMode.Deep);
             Scribe_Collections.Look(ref pending,            "pendingEvents",    LookMode.Value);
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
-            Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations", LookMode.Value, LookMode.Value);
-            Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",    LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",     LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _pawnEventLeaders,  "pawnEventLeaders",  LookMode.Value, LookMode.Value);
             Scribe_Values.Look(ref _prevColonyFoodDays, "prevColonyFoodDays", -1f);
             Scribe_Values.Look(ref _prevColonyMedicine, "prevColonyMedicine", -1);
             Scribe_Values.Look(ref _prevColonyWealth,   "prevColonyWealth",   -1f);
@@ -926,6 +930,7 @@ namespace Firefly
             if (_colonyHistory    == null) _colonyHistory    = "";
             if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
             if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
+            if (_pawnEventLeaders == null) _pawnEventLeaders = new Dictionary<string, string>();
 
             _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
             if (health != null)
@@ -1104,7 +1109,7 @@ namespace Firefly
             lock (_timelineBuffer) _timelineBuffer.Append(content);
         }
 
-        private void AppendEvent(long tick, string text)
+        internal void AppendEvent(long tick, string text)
         {
             if (!_initialized) return;
             try
@@ -1166,8 +1171,50 @@ namespace Firefly
             if (!isNew) return "";
             string category = GetPawnDescriptor(pawn);
             string line     = BuildRosterLine(pawn);
+            _pawnEventLeaders.TryGetValue(id, out string leaderLabel);
+            if (!leaderLabel.NullOrEmpty()) line += $" — {leaderLabel}";
             lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
             return $" ({category})";
+        }
+
+        public void IntroduceEventLeader(Pawn pawn, string eventLabel, long tick)
+        {
+            if (!_initialized || pawn == null) return;
+            string id = pawn.ThingID;
+            if (id.NullOrEmpty()) return;
+
+            float lon = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
+            int hr  = GenDate.HourInteger(tick, lon);
+            int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
+            string leaderLabel = $"Leader of the {eventLabel} [{hr:D2}:{min:D2}]";
+            _pawnEventLeaders[id] = leaderLabel;
+
+            bool isNew;
+            lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
+
+            if (isNew)
+            {
+                string category = GetPawnDescriptor(pawn);
+                string line     = BuildRosterLine(pawn) + $" — {leaderLabel}";
+                lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
+            }
+            else
+            {
+                // Pawn already in roster — retroactively append the leader label
+                string baseName = PawnFullName(pawn);
+                lock (_trackedPawnLines)
+                {
+                    for (int i = 0; i < _trackedPawnLines.Count; i++)
+                    {
+                        if (_trackedPawnLines[i].Name.StartsWith(baseName))
+                        {
+                            string updated = _trackedPawnLines[i].Name + $" — {leaderLabel}";
+                            _trackedPawnLines[i] = (updated, _trackedPawnLines[i].Descriptor);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         private static string BuildRosterLine(Pawn pawn)
@@ -1213,7 +1260,7 @@ namespace Firefly
 
             string line = fullName;
             if (attrs.Count > 0) line += $" — {string.Join(", ", attrs)}";
-            if (!callName.NullOrEmpty()) line += $" — refer to as \"{callName}\" only";
+            if (!callName.NullOrEmpty()) line += $" — refer to as \"{callName}\"";
             return line;
         }
 
@@ -1861,7 +1908,7 @@ namespace Firefly
                 if (entry is PlayLogEntry_Interaction)
                 {
                     var interactionDef = _interactionDefField?.GetValue(entry) as Def;
-                    if (interactionDef?.defName == "Chitchat") return;
+                    if (interactionDef != null && _blockedInteractions.Contains(interactionDef.defName)) return;
 
                     logInitiator = _initiatorField?.GetValue(entry) as Pawn;
                     logRecipient = _recipientField?.GetValue(entry) as Pawn;

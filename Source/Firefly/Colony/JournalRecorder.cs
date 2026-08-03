@@ -106,20 +106,34 @@ namespace Firefly
             "happened today. Your job is to summarise today's log into a short piece of focused " +
             "writing, detailing what happened.\n\n" +
             "Write the summary as the colony's story. The colonists try to be united for the " +
-            "benefit of the colony, though they aren't always aligned with each other and the " +
+            "benefit of the colony, though they aren't always aligned with each-other and the " +
             "wellbeing of the colony. Routine labour, chitchat, minor social changes, weather, " +
             "and other small details should serve as underlying texture.\n\n" +
-            "The opening should set the day's scene — an image or feeling, drawn from the day, " +
+            "The opening should set the day's scene - an image or feeling, drawn from the day, " +
             "where the colony has been, where it stands now, or where it's heading. Events " +
-            "outside of the routine — combat, quests, allies and enemies, life, death, any " +
-            "changes to the overall state of the colony, etc. — should get more focus.\n\n" +
-            "You should always explain things with causality — if something out of the ordinary " +
-            "happens, say when it happened and, if the reason is given, why.\n\n" +
+            "outside of the routine - combat, quests, allies and enemies, life, death, any " +
+            "changes to the overall state of the colony, etc. - should get more focus.\n\n" +
+            "You should always explain things with causality - if something out of the ordinary " +
+            "happens, say when it happened and, if the reason is given - why.\n\n" +
+            "Try to vary how you open and close today's summary compared to yesterday's.\n\n" +
+            "The log gives you figures - opinion scores, mood percentages, medical percentages. " +
+            "Use them to understand what's happening, but never state them directly. Translate " +
+            "them into plain description: a soured mood, a warming bond, an illness becoming terminal.\n\n" +
             "You should also be curious about things. Occasionally pose questions about events " +
             "that have vague circumstances, potential consequences, or could lead to greater " +
             "threads throughout the world. You are invested in the future of this story, along " +
             "with how it's played out so far.\n\n" +
-            "8 lines maximum.";
+            "Here's an example output summary. It's just a general outline of the type of " +
+            "writing you should aim for - don't follow it strictly.\n\n" +
+            "\"_It rained all day. Dickson and Yuriy set out to scavenge steel and machinery " +
+            "from a ship wreckage that crashed nearby in the morning. Perhaps a battle recently " +
+            "took place? The colony also agreed to help some passing vagabonds by donating them " +
+            "a chunk of the colony's silver - a favour that the vagabonds hopefully soon won't " +
+            "forget as they continue across the land. Anfisa, a friendly inventor, stopped by " +
+            "as dusk fell. Perhaps to scout, perhaps just to introduce herself as a friend " +
+            "rather than foe. Either way, it seems like the colony has started to attract " +
+            "attention. \"\n\n" +
+            "8 Lines maximum.";
 
         private static readonly string ArcSystemPrompt =
             "You are Fillion, chronicler of a colony on a distant earth-like rimworld. You will be " +

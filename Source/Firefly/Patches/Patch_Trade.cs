@@ -28,9 +28,8 @@ namespace Firefly
                 {
                     if (t.ActionToDo == TradeAction.None || t.CountToTransfer == 0) continue;
 
-                    string label = t.CountToTransfer == 1
-                        ? t.Label
-                        : $"{t.CountToTransfer} {t.Label}";
+                    int count = Math.Abs(t.CountToTransfer);
+                    string label = count == 1 ? t.Label : $"{count} {t.Label}";
 
                     if (t.ActionToDo == TradeAction.PlayerSells)
                         lost.Add(label);
@@ -40,9 +39,9 @@ namespace Firefly
 
                 if (lost.Count == 0 && gained.Count == 0) return;
 
-                var sb = new StringBuilder($"[Trade with {trader.TraderName}]");
-                if (lost.Count   > 0) sb.Append($"\n  Lost:   {string.Join(", ", lost)}");
-                if (gained.Count > 0) sb.Append($"\n  Gained: {string.Join(", ", gained)}");
+                var sb = new StringBuilder($"Trade with {trader.TraderName}");
+                if (lost.Count   > 0) sb.Append($" - Lost: {string.Join(", ", lost)}.");
+                if (gained.Count > 0) sb.Append($" Gained: {string.Join(", ", gained)}.");
                 _pendingLog = sb.ToString();
             }
             catch (Exception e)
@@ -54,7 +53,7 @@ namespace Firefly
         static void Postfix(bool actuallyTraded)
         {
             if (actuallyTraded && !_pendingLog.NullOrEmpty())
-                try { ColonyLedger.Current?.AppendRawToTimeline("\n" + _pendingLog); }
+                try { ColonyLedger.Current?.AppendEvent(Find.TickManager.TicksAbs, _pendingLog); }
                 catch { }
             _pendingLog = null;
         }
