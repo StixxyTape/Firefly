@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using HarmonyLib;
 using RimWorld;
+using RimWorld.Planet;
 using UnityEngine;
 using Verse;
 
@@ -72,6 +73,10 @@ namespace Firefly
         private Dictionary<string, PawnHealthSnapshot> _prevDayHealth    = new Dictionary<string, PawnHealthSnapshot>();
         private Dictionary<string, string>             _prevDayRelations = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevDaySkills    = new Dictionary<string, string>();
+
+        private float _prevColonyFoodDays = -1f;
+        private int   _prevColonyMedicine = -1;
+        private float _prevColonyWealth   = -1f;
 
         private readonly List<CombatEvent> _capturedBattleEvents = new List<CombatEvent>();
         private readonly List<HazardEvent> _capturedHazardEvents = new List<HazardEvent>();
@@ -226,6 +231,8 @@ namespace Firefly
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "initiator");
         private static readonly FieldInfo _recipientField =
             AccessTools.Field(typeof(PlayLogEntry_Interaction), "recipient");
+        private static readonly FieldInfo _interactionDefField =
+            AccessTools.Field(typeof(PlayLogEntry_Interaction), "interactionDef");
         private static readonly FieldInfo _logEntryTicksAbsField =
             AccessTools.Field(typeof(LogEntry), "ticksAbs");
 
@@ -248,7 +255,8 @@ namespace Firefly
             EnsureDayHeader(map, lon, snapshotTick);
 
             string weather = map.weatherManager?.curWeather?.LabelCap ?? "Unknown";
-            AppendEvent(snapshotTick, $"Weather — {weather}");
+            float  tempC   = map.mapTemperature?.OutdoorTemp ?? 0f;
+            AppendEvent(snapshotTick, $"Weather — {weather}, {Mathf.RoundToInt(tempC)}°C");
 
             var colonists = map.mapPawns?.FreeColonists?.ToList();
             if (colonists != null)
@@ -257,6 +265,11 @@ namespace Firefly
                 {
                     if (p == null) continue;
                     string activity = p.jobs?.curDriver?.GetReport()?.CapitalizeFirst() ?? "idle";
+                    if (p.jobs?.curJob?.def == JobDefOf.Research)
+                    {
+                        string proj = Find.ResearchManager.GetProject()?.LabelCap;
+                        if (!proj.NullOrEmpty()) activity = $"Researching \"{proj}\"";
+                    }
                     var carried = p.carryTracker?.CarriedThing;
                     if (carried != null)
                         activity += $" (carrying {StripTags(carried.Label)})";
@@ -270,13 +283,55 @@ namespace Firefly
             Log.Message($"[Firefly] Ledger recorded: Hour {hourOfDay:D2}:00, Day {_recordingDay}");
         }
 
+        private static string BuildTileDescription(Map map)
+        {
+            try
+            {
+                var tile = Find.WorldGrid?[map.Tile];
+                if (tile == null) return "";
+
+                string biome      = tile.PrimaryBiome?.LabelCap ?? "";
+                var    hilliness  = tile.HillinessLabel;
+                var    mutators   = tile.Mutators;
+
+                var features = new List<string>();
+                if (mutators != null)
+                    foreach (var m in mutators)
+                        if (!m.label.NullOrEmpty()) features.Add(m.LabelCap);
+
+                bool isFlat       = hilliness == Hilliness.Flat;
+                bool isMountainous = hilliness == Hilliness.Mountainous || hilliness == Hilliness.Impassable;
+
+                if (!isFlat && !isMountainous)
+                {
+                    string hillLabel = hilliness switch
+                    {
+                        Hilliness.SmallHills => "Small Hills",
+                        Hilliness.LargeHills => "Large Hills",
+                        _                    => null,
+                    };
+                    if (hillLabel != null) features.Insert(0, hillLabel);
+                }
+
+                string prefix = isFlat ? "Flat " : isMountainous ? "Mountainous " : "";
+                string loc    = features.Count > 0
+                    ? $"{prefix}{biome} with {string.Join(", ", features)}"
+                    : $"{prefix}{biome}";
+
+                return $"Deep in a {loc}.";
+            }
+            catch { return ""; }
+        }
+
         private void EnsureDayHeader(Map map, float lon, long tick)
         {
             if (_dayHeaderWritten) return;
             _dayHeaderWritten = true;
-            string colony   = map.info?.parent?.Label ?? "Unnamed Colony";
-            string fullDate = GenDate.DateFullStringAt(tick, new UnityEngine.Vector2(lon, 0f));
-            string header   = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{fullDate}\n\n=== EVENTS ===\n";
+            string colony      = map.info?.parent?.Label ?? "Unnamed Colony";
+            string fullDate    = GenDate.DateFullStringAt(tick, new UnityEngine.Vector2(lon, 0f));
+            string tileDesc    = BuildTileDescription(map);
+            string locationLine = tileDesc.NullOrEmpty() ? "" : tileDesc + "\n";
+            string header      = $"=== DAY {_recordingDay} CHRONICLE — {colony} ===\n{fullDate}\n{locationLine}\n=== EVENTS ===\n";
             lock (_timelineBuffer) _timelineBuffer.Append(header);
 
             if (_pastDays.Count == 0)
@@ -445,6 +500,55 @@ namespace Firefly
             return sb.ToString();
         }
 
+        // ── Colony status ─────────────────────────────────────────────────────
+
+        public string BuildColonyStatusSection(Map map)
+        {
+            try
+            {
+                var colonists = map.mapPawns?.FreeColonists;
+                int count = colonists?.Count ?? 0;
+
+                float totalNutrition = map.resourceCounter.TotalHumanEdibleNutrition;
+                float dailyRate = count > 0
+                    ? colonists.Where(p => p != null).Sum(p => (p.needs?.food?.FoodFallPerTick ?? 0f) * 60000f)
+                    : 1.6f;
+                float foodDays = dailyRate > 0f ? totalNutrition / dailyRate : 0f;
+
+                int medicine = 0;
+                if (ThingDefOf.MedicineHerbal     != null) medicine += map.resourceCounter.GetCount(ThingDefOf.MedicineHerbal);
+                if (ThingDefOf.MedicineIndustrial != null) medicine += map.resourceCounter.GetCount(ThingDefOf.MedicineIndustrial);
+                if (ThingDefOf.MedicineUltratech  != null) medicine += map.resourceCounter.GetCount(ThingDefOf.MedicineUltratech);
+
+                float wealth = map.resourceCounter.GetCount(ThingDefOf.Silver);
+
+                string DeltaStr(float cur, float prev) =>
+                    prev < 0f ? "" : cur > prev ? $" (▲ from {prev:N0})" : cur < prev ? $" (▼ from {prev:N0})" : "";
+
+                string foodDelta    = _prevColonyFoodDays < 0f ? "" :
+                    foodDays > _prevColonyFoodDays ? $" (▲ from {_prevColonyFoodDays:F1})" :
+                    foodDays < _prevColonyFoodDays ? $" (▼ from {_prevColonyFoodDays:F1})" : "";
+                string foodWarning  = foodDays < 4f ? " — low" : "";
+
+                var sb = new StringBuilder();
+                sb.AppendLine("=== COLONY STATUS ===");
+                sb.AppendLine($"Food: {foodDays:F1} days{foodDelta}{foodWarning}");
+                sb.AppendLine($"Medicine: {medicine}{DeltaStr(medicine, _prevColonyMedicine)}");
+                sb.AppendLine($"Silver: {wealth:N0}{DeltaStr(wealth, _prevColonyWealth)}");
+
+                _prevColonyFoodDays = foodDays;
+                _prevColonyMedicine = medicine;
+                _prevColonyWealth   = wealth;
+
+                return sb.ToString();
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"[Firefly] BuildColonyStatusSection failed: {e.Message}");
+                return "";
+            }
+        }
+
         // ── Health / relations / skills ───────────────────────────────────────
 
         public string BuildComparisonSection(Map map)
@@ -489,6 +593,50 @@ namespace Firefly
             }
             _prevDayHealth = currentHealth;
 
+            // Prisoners and slaves that appeared in today's roster
+            var captives = new List<Pawn>();
+            if (map.mapPawns?.PrisonersOfColonySpawned != null)
+                captives.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null && _trackedPawnIds.Contains(p.ThingID ?? "")));
+            if (map.mapPawns?.SlavesOfColonySpawned != null)
+                captives.AddRange(map.mapPawns.SlavesOfColonySpawned.Where(p => p != null && _trackedPawnIds.Contains(p.ThingID ?? "")));
+
+            if (captives.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("=== PRISONER/SLAVE HEALTH ===");
+                foreach (var p in captives)
+                {
+                    string name = PawnFullName(p);
+                    string id   = p.ThingID ?? p.LabelShort ?? "?";
+                    var    snap = TakePawnHealthSnapshot(p);
+                    currentHealth[id] = snap;
+                    _prevDayHealth.TryGetValue(id, out PawnHealthSnapshot prev);
+
+                    string overallLine = $"Overall: {snap.HealthPct}%";
+                    if (prev != null && prev.HealthPct != snap.HealthPct)
+                    {
+                        int hDelta = snap.HealthPct - prev.HealthPct;
+                        overallLine += $" ({(hDelta < 0 ? "decreased" : "increased")} by {Math.Abs(hDelta)}% today)";
+                    }
+                    if (snap.BleedRatePct > 0 && snap.HoursUntilDeath > 0f)
+                        overallLine += $" — {snap.HoursUntilDeath:F1}h until death";
+
+                    if (p.Dead)               overallLine += " — Dead";
+                    else if (p.Downed)        overallLine += " — Downed";
+                    else if (p.InMentalState) overallLine += $" — Mental break ({p.MentalStateDef?.label ?? "unknown"})";
+
+                    string conditions = RenderHealthConditions(snap, prev);
+                    if (conditions.NullOrEmpty() && snap.BleedRatePct == 0 && snap.HoursUntilDeath == 0f)
+                        overallLine += " — Healthy";
+
+                    string role = p.IsPrisonerOfColony ? "Prisoner" : "Slave";
+                    sb.AppendLine($"  {name} ({role}) health overview:");
+                    sb.AppendLine($"    - {overallLine}");
+                    if (!conditions.NullOrEmpty())
+                        sb.AppendLine($"    - {conditions}");
+                }
+            }
+
             var currentRelations = GetRelationSnapshot(map, colonists);
             string relationChanges = BuildRelationChanges(currentRelations);
             if (!relationChanges.NullOrEmpty())
@@ -510,7 +658,7 @@ namespace Firefly
             return sb.ToString();
         }
 
-        private static Dictionary<string, string> GetRelationSnapshot(Map map, List<Pawn> colonists)
+        private Dictionary<string, string> GetRelationSnapshot(Map map, List<Pawn> colonists)
         {
             var snapshot = new Dictionary<string, string>();
             foreach (var pawnA in colonists)
@@ -530,6 +678,8 @@ namespace Firefly
                     .ToList();
                 if (socialMems != null)
                     foreach (var t in socialMems) related.Add(t.otherPawn);
+
+                related.RemoveWhere(p => p == null || !_trackedPawnIds.Contains(p.ThingID ?? ""));
 
                 foreach (var pawnB in related)
                 {
@@ -591,7 +741,6 @@ namespace Firefly
                 var curThoughtSet  = new HashSet<string>(curThoughts.Split(';').Where(t => !t.NullOrEmpty()));
                 var prevThoughtSet = new HashSet<string>(prevThoughts.Split(';').Where(t => !t.NullOrEmpty()));
                 foreach (var t in curThoughtSet.Except(prevThoughtSet))  changes.Add($"new memory about {nameB}: {t}");
-                foreach (var t in prevThoughtSet.Except(curThoughtSet))  changes.Add($"memory about {nameB} expired: {t}");
 
                 if (changes.Any())
                 {
@@ -738,23 +887,40 @@ namespace Firefly
             var pawnIds      = saving ? _trackedPawnIds.ToList() : null;
             var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
             var questIds     = saving ? _mentionedQuestIds.ToList() : null;
+            string timelineSnapshot = saving ? _timelineBuffer.ToString() : null;
+            List<string> drainedCombat  = saving ? _drainedCombatLines.Select(e  => $"{e.Tick}{FieldSep}{e.Text}").ToList()  : null;
+            List<string> drainedHazard  = saving ? _drainedHazardLines.Select(e  => $"{e.Tick}{FieldSep}{e.Text}").ToList()  : null;
 
-            Scribe_Values.Look(ref _recordingDay,   "recordingDay",   0);
-            Scribe_Values.Look(ref _initialized,    "initialized",    false);
-            Scribe_Values.Look(ref _colonyHistory,  "colonyHistory",  "");
-            Scribe_Values.Look(ref _lastArcDay,     "lastArcDay",     0);
+            Scribe_Values.Look(ref _recordingDay,      "recordingDay",      0);
+            Scribe_Values.Look(ref _initialized,       "initialized",       false);
+            Scribe_Values.Look(ref _dayHeaderWritten,  "dayHeaderWritten",  false);
+            Scribe_Values.Look(ref _colonyHistory,     "colonyHistory",     "");
+            Scribe_Values.Look(ref _lastArcDay,        "lastArcDay",        0);
+            Scribe_Values.Look(ref timelineSnapshot,   "timelineBuffer",    "");
             Scribe_Collections.Look(ref _pastDays,          "pastDays",         LookMode.Deep);
             Scribe_Collections.Look(ref pending,            "pendingEvents",    LookMode.Value);
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations", LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",    LookMode.Value, LookMode.Value);
+            Scribe_Values.Look(ref _prevColonyFoodDays, "prevColonyFoodDays", -1f);
+            Scribe_Values.Look(ref _prevColonyMedicine, "prevColonyMedicine", -1);
+            Scribe_Values.Look(ref _prevColonyWealth,   "prevColonyWealth",   -1f);
             Scribe_Collections.Look(ref battles,            "announcedBattles", LookMode.Value);
             Scribe_Collections.Look(ref hazards,            "announcedHazards", LookMode.Value);
             Scribe_Collections.Look(ref pawnIds,            "trackedPawnIds",    LookMode.Value);
             Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines",  LookMode.Value);
             Scribe_Collections.Look(ref questIds,           "mentionedQuestIds", LookMode.Value);
+            Scribe_Collections.Look(ref drainedCombat,      "drainedCombat",     LookMode.Value);
+            Scribe_Collections.Look(ref drainedHazard,      "drainedHazard",     LookMode.Value);
 
             if (Scribe.mode != LoadSaveMode.LoadingVars) return;
+
+            lock (_timelineBuffer)
+            {
+                _timelineBuffer.Clear();
+                if (!timelineSnapshot.NullOrEmpty())
+                    _timelineBuffer.Append(timelineSnapshot);
+            }
 
             if (_pastDays         == null) _pastDays         = new List<DailyRecord>();
             if (_colonyHistory    == null) _colonyHistory    = "";
@@ -797,6 +963,40 @@ namespace Firefly
                 }
 
             DecodePendingEvents(pending);
+
+            lock (_drainedCombatLines)
+            {
+                _drainedCombatLines.Clear();
+                _drainedCombatLastTick.Clear();
+                if (drainedCombat != null)
+                    foreach (var s in drainedCombat)
+                    {
+                        int sep = s.IndexOf(FieldSep);
+                        if (sep > 0 && long.TryParse(s.Substring(0, sep), out long tick))
+                        {
+                            string text = s.Substring(sep + 1);
+                            _drainedCombatLines.Add((tick, text));
+                            _drainedCombatLastTick[text] = tick;
+                        }
+                    }
+            }
+
+            lock (_drainedHazardLines)
+            {
+                _drainedHazardLines.Clear();
+                _drainedHazardLastTick.Clear();
+                if (drainedHazard != null)
+                    foreach (var s in drainedHazard)
+                    {
+                        int sep = s.IndexOf(FieldSep);
+                        if (sep > 0 && long.TryParse(s.Substring(0, sep), out long tick))
+                        {
+                            string text = s.Substring(sep + 1);
+                            _drainedHazardLines.Add((tick, text));
+                            _drainedHazardLastTick[text] = tick;
+                        }
+                    }
+            }
         }
 
         private List<string> EncodePendingEvents()
@@ -1009,14 +1209,7 @@ namespace Firefly
             }
             catch { }
 
-            string callName = null;
-            if (pawn.Name is NameTriple nt)
-            {
-                bool hasNick = !nt.Nick.NullOrEmpty() && nt.Nick != nt.First && nt.Nick != nt.Last;
-                callName = hasNick ? nt.Nick : nt.First;
-            }
-            else
-                callName = pawn.LabelShort;
+            string callName = pawn.LabelShort;
 
             string line = fullName;
             if (attrs.Count > 0) line += $" — {string.Join(", ", attrs)}";
@@ -1667,6 +1860,9 @@ namespace Firefly
 
                 if (entry is PlayLogEntry_Interaction)
                 {
+                    var interactionDef = _interactionDefField?.GetValue(entry) as Def;
+                    if (interactionDef?.defName == "Chitchat") return;
+
                     logInitiator = _initiatorField?.GetValue(entry) as Pawn;
                     logRecipient = _recipientField?.GetValue(entry) as Pawn;
                     bool colonistInvolved = (logInitiator?.IsFreeColonist ?? false)

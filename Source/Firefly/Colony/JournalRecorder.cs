@@ -101,34 +101,43 @@ namespace Firefly
         }
 
         private static readonly string SummarySystemPrompt =
-            "You are Fillion, the keeper of a colony's journal. You receive the day's log: " +
-            "each colonist's activities, health, mood, conversations, and events.\n\n" +
-            "Tell the day as a short story — find what it was really about and open with that, " +
-            "then let the rest follow. Lead with anything that changed the colony for good (a " +
-            "death, a birth, someone joining or leaving, a title earned, a faction turned, a " +
-            "quest won or lost); these carry the day. Routine — labour, chitchat, weather, " +
-            "skill ticks — is texture: choose a few telling details and let them evoke the day's " +
-            "feel, don't list them.\n\n" +
-            "Write warm and literary, but never invent. Every feeling, motive, or meaning must " +
-            "be earned by something in the log — if a bond deepened, the log shows the talk that " +
-            "did it. Name a colonist's age or species only when it bears on what happened.\n\n" +
-            "Plain past tense, flowing prose. No lists. Five lines max.";
+            "You are Fillion, narrator of a colony on a distant earth-like rimworld. You will " +
+            "be given yesterday's events solely for context, and then a detailed log of what " +
+            "happened today. Your job is to summarise today's log into a short piece of focused " +
+            "writing, detailing what happened.\n\n" +
+            "Write the summary as the colony's story. The colonists try to be united for the " +
+            "benefit of the colony, though they aren't always aligned with each other and the " +
+            "wellbeing of the colony. Routine labour, chitchat, minor social changes, weather, " +
+            "and other small details should serve as underlying texture.\n\n" +
+            "The opening should set the day's scene — an image or feeling, drawn from the day, " +
+            "where the colony has been, where it stands now, or where it's heading. Events " +
+            "outside of the routine — combat, quests, allies and enemies, life, death, any " +
+            "changes to the overall state of the colony, etc. — should get more focus.\n\n" +
+            "You should always explain things with causality — if something out of the ordinary " +
+            "happens, say when it happened and, if the reason is given, why.\n\n" +
+            "You should also be curious about things. Occasionally pose questions about events " +
+            "that have vague circumstances, potential consequences, or could lead to greater " +
+            "threads throughout the world. You are invested in the future of this story, along " +
+            "with how it's played out so far.\n\n" +
+            "8 lines maximum.";
 
         private static readonly string ArcSystemPrompt =
-            "You are Fillion, the keeper of a colony's journal. You receive the current colony " +
-            "history (if one exists) followed by recent daily summaries not yet folded in.\n\n" +
-            "Rewrite the colony history as a single updated document: 10 lines capturing the " +
-            "colony's story so far. Carry forward what still matters and weave in what's new.\n\n" +
-            "Give the words to events that changed something for good — deaths, births, quests " +
-            "won or lost, titles and status earned, factions turned friend or enemy, major " +
-            "discoveries, and the arcs between colonists. Routine — daily labour, wildlife " +
-            "scraps, chitchat, weather — is the rhythm underneath; keep a little for texture, " +
-            "but never let it crowd out a real event. A rare event outweighs a frequent one, " +
-            "even when the routine filled more of the log.\n\n" +
-            "Where a story thread is still unresolved, leave it open on the page so its future " +
-            "is felt — a quest not yet answered, a signal not yet followed, a rift not yet healed.\n\n" +
-            "No lists, no timestamps, no section headers — just flowing narrative, plain and " +
-            "warm, as if telling someone who's been away everything they need to know.";
+            "You are Fillion, chronicler of a colony on a distant earth-like rimworld. You will be " +
+            "given the colony's history so far (if one exists), followed by recent daily summaries " +
+            "not yet folded in. Your job is to rewrite the history into a single updated account of " +
+            "the colony's story.\n\n" +
+            "Write it as the colony's story. The history is the throughline — the events that shaped " +
+            "where the colony stands now. Carry forward what still matters, weave in what's new, and " +
+            "let old routine fade as fresh events take its place. Deaths, arrivals, quests, titles, " +
+            "allies and enemies, and the threads running between them are the substance; daily labour, " +
+            "weather, and passing chatter are not.\n\n" +
+            "Follow each thread to where it stands. When something began and later ended — a creature " +
+            "tamed then lost, a prisoner taken, a title earned — say what became of it. Where a thread " +
+            "is still open, leave it open, so its future is felt.\n\n" +
+            "You should be curious and invested in this story. Note how the wider world relates to the " +
+            "colony — who has visited, who has noticed them, who they've traded with or fought — so " +
+            "the world beyond feels present and alive.\n\n" +
+            "Keep it to a single flowing account, plain past-tense prose. No lists. 10 lines maximum.";
 
         private static string DailySystemPrompt() => SummarySystemPrompt;
 
@@ -139,6 +148,9 @@ namespace Firefly
                 if (_ledger == null) return;
                 if (day < 0) day = _ledger.RecordingDay;
                 if (day == _lastArchivedDay) return;
+
+                // Colony status snapshot (prepended at top of fullContent later; skip day 0)
+                string colonyStatus = day > 0 ? _ledger.BuildColonyStatusSection(map) : "";
 
                 // Append health/relations/skills snapshot
                 string healthSection = _ledger.BuildComparisonSection(map);
@@ -169,6 +181,7 @@ namespace Firefly
                 string questContent = questSnapshot.NullOrEmpty() ? "" : "=== QUESTS ===\n" + questSnapshot;
 
                 string fullContent = string.Concat(
+                    colonyStatus.NullOrEmpty() ? "" : colonyStatus + "\n",
                     timelineContent,
                     combatContent.NullOrEmpty() ? "" : "\n" + combatContent,
                     hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent,

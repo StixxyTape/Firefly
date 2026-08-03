@@ -159,7 +159,7 @@ namespace Firefly
             if (_nav == NavColony)            { DrawColony(rect, ledger);        return; }
 
             var rec = past.FirstOrDefault(d => d.Day == _nav);
-            if (rec != null) DrawDay(rect, rec);
+            if (rec != null) DrawDay(rect, rec, past);
         }
 
         // ── Today view ────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ namespace Firefly
 
         // ── Past day view ─────────────────────────────────────────────────────
 
-        private void DrawDay(Rect rect, DailyRecord record)
+        private void DrawDay(Rect rect, DailyRecord record, IReadOnlyList<DailyRecord> past)
         {
             var parsed = ParseSections(record.Timeline);
 
@@ -219,11 +219,13 @@ namespace Firefly
                 eventsContent = "Character Roster:\n" + rRaw.Trim() + "\n\n";
             eventsContent += evRaw ?? "";
 
-            // Status = health + relations + skills
+            // Status = colony status + health + relations + skills
             var statusParts = new System.Collections.Generic.List<string>();
-            if (parsed.TryGetValue("COLONIST HEALTH",      out string h)  && !h.NullOrEmpty())  statusParts.Add(h.Trim());
-            if (parsed.TryGetValue("RELATIONSHIP CHANGES",  out string r)  && !r.NullOrEmpty())  statusParts.Add(r.Trim());
-            if (parsed.TryGetValue("SKILL CHANGES",         out string sk) && !sk.NullOrEmpty()) statusParts.Add(sk.Trim());
+            if (parsed.TryGetValue("COLONY STATUS",          out string cs) && !cs.NullOrEmpty())  statusParts.Add(cs.Trim());
+            if (parsed.TryGetValue("COLONIST HEALTH",        out string h)  && !h.NullOrEmpty())   statusParts.Add(h.Trim());
+            if (parsed.TryGetValue("PRISONER/SLAVE HEALTH",  out string ph) && !ph.NullOrEmpty())  statusParts.Add(ph.Trim());
+            if (parsed.TryGetValue("RELATIONSHIP CHANGES",   out string r)  && !r.NullOrEmpty())   statusParts.Add(r.Trim());
+            if (parsed.TryGetValue("SKILL CHANGES",          out string sk) && !sk.NullOrEmpty())  statusParts.Add(sk.Trim());
             string statusContent = string.Join("\n\n", statusParts);
 
             parsed.TryGetValue("COMBAT",  out string combatContent);
@@ -243,7 +245,11 @@ namespace Firefly
             if (!combatContent.NullOrEmpty())            secs.Add(("COMBAT",  AcCombat,  combatContent));
             if (!hazardContent.NullOrEmpty())            secs.Add(("HAZARDS", AcHazards, hazardContent));
             if (!record.QuestSnapshot.NullOrEmpty())     secs.Add(("QUESTS",  AcQuests,  record.QuestSnapshot));
-            secs.Add(("LLM IN",  new Color(0.65f, 0.55f, 0.80f), record.Timeline ?? ""));
+            string prevSummary = past.FirstOrDefault(d => d.Day == record.Day - 1 && !d.Summary.NullOrEmpty())?.Summary;
+            string llmIn = prevSummary.NullOrEmpty()
+                ? (record.Timeline ?? "")
+                : $"=== PREVIOUS DAY SUMMARY (context only — do not summarise this) ===\n{prevSummary.Trim()}\n\n{record.Timeline}";
+            secs.Add(("LLM IN",  new Color(0.65f, 0.55f, 0.80f), llmIn));
             secs.Add(("LLM OUT", new Color(0.45f, 0.75f, 0.65f), summaryText));
 
             DrawSectioned(rect, secs, $"day{record.Day}", AcEvents, $"DAY {record.Day}");
