@@ -21,9 +21,6 @@ namespace Firefly
                 string archiveLabel = (let as IArchivable)?.ArchivedLabel;
 
                 Pawn pawn = let.lookTargets?.PrimaryTarget.Thing as Pawn;
-
-                Log.Message($"[Firefly] Letter '{archiveLabel}': faction={let.relatedFaction?.Name}, resolved pawn={pawn?.LabelShort ?? "null"}");
-
                 if (pawn == null || pawn.IsFreeColonist || pawn.IsPrisonerOfColony || pawn.IsSlaveOfColony) return;
                 if (archiveLabel.NullOrEmpty()) return;
 
