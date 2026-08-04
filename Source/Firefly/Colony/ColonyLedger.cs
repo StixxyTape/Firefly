@@ -73,7 +73,6 @@ namespace Firefly
         private Dictionary<string, PawnHealthSnapshot> _prevDayHealth    = new Dictionary<string, PawnHealthSnapshot>();
         private Dictionary<string, string>             _prevDayRelations = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevDaySkills    = new Dictionary<string, string>();
-        private Dictionary<string, string>             _pawnEventLeaders = new Dictionary<string, string>();
 
         private float _prevColonyFoodDays = -1f;
         private int   _prevColonyMedicine = -1;
@@ -94,11 +93,12 @@ namespace Firefly
         public int                        LastArcDay     => _lastArcDay;
 
         // ── Live timeline buffer ──────────────────────────────────────────────
-        private bool                             _dayHeaderWritten   = false;
-        private readonly HashSet<string>         _trackedPawnIds     = new HashSet<string>();
+        private bool                             _dayHeaderWritten        = false;
+        private readonly HashSet<string>         _trackedPawnIds          = new HashSet<string>();
         private readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
-        private readonly StringBuilder           _timelineBuffer     = new StringBuilder();
-        private readonly HashSet<int>            _mentionedQuestIds  = new HashSet<int>();
+        private readonly StringBuilder           _timelineBuffer          = new StringBuilder();
+        private readonly HashSet<int>            _mentionedQuestIds       = new HashSet<int>();
+        private readonly Dictionary<string, long> _lastFactionCombatTick  = new Dictionary<string, long>();
 
 
         // ── Capture methods ───────────────────────────────────────────────────
@@ -183,6 +183,28 @@ namespace Firefly
         {
             var parts = _damagedPartsField?.GetValue(entry) as List<BodyPartRecord>;
             return parts != null && parts.Count > 0;
+        }
+
+        public void CaptureFactionCombat(Faction factionA, Faction factionB, long tick)
+        {
+            if (!_initialized) return;
+            if (factionA == null || factionB == null) return;
+            if (factionA == Faction.OfPlayer || factionB == Faction.OfPlayer) return;
+            if (factionA == factionB) return;
+
+            string nameA = factionA.Name ?? "Unknown";
+            string nameB = factionB.Name ?? "Unknown";
+            string key = string.Compare(nameA, nameB, StringComparison.Ordinal) <= 0
+                ? $"{nameA}:{nameB}" : $"{nameB}:{nameA}";
+
+            long cooldown = GenDate.TicksPerHour * 3;
+            lock (_lastFactionCombatTick)
+            {
+                if (_lastFactionCombatTick.TryGetValue(key, out long last) && tick - last < cooldown) return;
+                _lastFactionCombatTick[key] = tick;
+            }
+
+            AppendEvent(tick, $"{nameA} vs {nameB}");
         }
 
         public void CaptureMessage(Message msg)
@@ -640,7 +662,11 @@ namespace Firefly
                 }
             }
 
-            var currentRelations = GetRelationSnapshot(map, colonists);
+            var allTracked = new List<Pawn>(colonists);
+            if (map.mapPawns?.PrisonersOfColonySpawned != null) allTracked.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null));
+            if (map.mapPawns?.SlavesOfColonySpawned    != null) allTracked.AddRange(map.mapPawns.SlavesOfColonySpawned.Where(p => p != null));
+
+            var currentRelations = GetRelationSnapshot(map, allTracked);
             string relationChanges = BuildRelationChanges(currentRelations);
             if (!relationChanges.NullOrEmpty())
             {
@@ -905,7 +931,6 @@ namespace Firefly
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",     LookMode.Value, LookMode.Value);
-            Scribe_Collections.Look(ref _pawnEventLeaders,  "pawnEventLeaders",  LookMode.Value, LookMode.Value);
             Scribe_Values.Look(ref _prevColonyFoodDays, "prevColonyFoodDays", -1f);
             Scribe_Values.Look(ref _prevColonyMedicine, "prevColonyMedicine", -1);
             Scribe_Values.Look(ref _prevColonyWealth,   "prevColonyWealth",   -1f);
@@ -930,7 +955,6 @@ namespace Firefly
             if (_colonyHistory    == null) _colonyHistory    = "";
             if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
             if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
-            if (_pawnEventLeaders == null) _pawnEventLeaders = new Dictionary<string, string>();
 
             _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
             if (health != null)
@@ -1139,7 +1163,8 @@ namespace Firefly
             lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
             lock (_drainedCombatLines) { _drainedCombatLines.Clear(); _drainedCombatLastTick.Clear(); }
-            lock (_drainedHazardLines) { _drainedHazardLines.Clear(); _drainedHazardLastTick.Clear(); }
+            lock (_drainedHazardLines)   { _drainedHazardLines.Clear();  _drainedHazardLastTick.Clear(); }
+            lock (_lastFactionCombatTick)  _lastFactionCombatTick.Clear();
         }
 
         // ── Pawn roster / tagging ─────────────────────────────────────────────
@@ -1171,8 +1196,6 @@ namespace Firefly
             if (!isNew) return "";
             string category = GetPawnDescriptor(pawn);
             string line     = BuildRosterLine(pawn);
-            _pawnEventLeaders.TryGetValue(id, out string leaderLabel);
-            if (!leaderLabel.NullOrEmpty()) line += $" — {leaderLabel}";
             lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
             return $" ({category})";
         }
@@ -1187,33 +1210,21 @@ namespace Firefly
             int hr  = GenDate.HourInteger(tick, lon);
             int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
             string leaderLabel = $"Leader of the {eventLabel} [{hr:D2}:{min:D2}]";
-            _pawnEventLeaders[id] = leaderLabel;
+            string baseLine    = BuildRosterLine(pawn);
+            string newLine     = baseLine + $" — {leaderLabel}";
+            string category    = GetPawnDescriptor(pawn);
 
-            bool isNew;
-            lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
+            lock (_trackedPawnIds) { _trackedPawnIds.Add(id); }
 
-            if (isNew)
+            lock (_trackedPawnLines)
             {
-                string category = GetPawnDescriptor(pawn);
-                string line     = BuildRosterLine(pawn) + $" — {leaderLabel}";
-                lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
-            }
-            else
-            {
-                // Pawn already in roster — retroactively append the leader label
-                string baseName = PawnFullName(pawn);
-                lock (_trackedPawnLines)
-                {
-                    for (int i = 0; i < _trackedPawnLines.Count; i++)
-                    {
-                        if (_trackedPawnLines[i].Name.StartsWith(baseName))
-                        {
-                            string updated = _trackedPawnLines[i].Name + $" — {leaderLabel}";
-                            _trackedPawnLines[i] = (updated, _trackedPawnLines[i].Descriptor);
-                            break;
-                        }
-                    }
-                }
+                // If the pawn was already introduced (e.g. via battle events before the letter),
+                // replace their existing entry with the leader-labelled version.
+                int idx = _trackedPawnLines.FindIndex(p => p.Name == baseLine || p.Name.StartsWith(baseLine + " —"));
+                if (idx >= 0)
+                    _trackedPawnLines[idx] = (newLine, category);
+                else
+                    _trackedPawnLines.Add((newLine, category));
             }
         }
 
@@ -1262,6 +1273,22 @@ namespace Firefly
             if (attrs.Count > 0) line += $" — {string.Join(", ", attrs)}";
             if (!callName.NullOrEmpty()) line += $" — refer to as \"{callName}\"";
             return line;
+        }
+
+        public void EnsureCaptivesIntroduced(Map map)
+        {
+            if (!_initialized || map == null) return;
+            try
+            {
+                var prisoners = map.mapPawns.PrisonersOfColonySpawned;
+                if (prisoners != null)
+                    foreach (var p in prisoners) IntroduceTag(p);
+
+                var slaves = map.mapPawns.SlavesOfColonySpawned;
+                if (slaves != null)
+                    foreach (var p in slaves) IntroduceTag(p);
+            }
+            catch { }
         }
 
         public string BuildPawnRosterSection()
@@ -1895,6 +1922,15 @@ namespace Firefly
             }
         }
 
+        internal static bool IsColonyMember(Pawn p)
+        {
+            if (p == null) return false;
+            return p.IsFreeColonist
+                || p.IsPrisonerOfColony
+                || p.IsSlaveOfColony
+                || (p.Faction == Faction.OfPlayer && (p.RaceProps?.Animal ?? false));
+        }
+
         public void CaptureLogEntry(LogEntry entry)
         {
             if (!_initialized || entry == null) return;
@@ -1912,8 +1948,7 @@ namespace Firefly
 
                     logInitiator = _initiatorField?.GetValue(entry) as Pawn;
                     logRecipient = _recipientField?.GetValue(entry) as Pawn;
-                    bool colonistInvolved = (logInitiator?.IsFreeColonist ?? false)
-                                        || (logRecipient?.IsFreeColonist ?? false);
+                    bool colonistInvolved = IsColonyMember(logInitiator) || IsColonyMember(logRecipient);
                     if (!colonistInvolved) return;
                     initiatorTag = IntroduceTag(logInitiator);
                     recipientTag = IntroduceTag(logRecipient);

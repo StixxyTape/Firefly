@@ -55,7 +55,7 @@ namespace Firefly
                 if (entry is BattleLogEntry_StateTransition)
                 {
                     var concerns = entry.GetConcerns().ToList();
-                    if (!concerns.OfType<Pawn>().Any(p => p.IsColonist)) return;
+                    if (!concerns.OfType<Pawn>().Any(p => ColonyLedger.IsColonyMember(p))) return;
                     HandleStateTransition(concerns, entry);
                     return;
                 }
@@ -75,7 +75,7 @@ namespace Firefly
                 if (entry is BattleLogEntry_DamageTaken)
                 {
                     var concerns = entry.GetConcerns().ToList();
-                    if (!concerns.OfType<Pawn>().Any(p => p.IsColonist)) return;
+                    if (!concerns.OfType<Pawn>().Any(p => ColonyLedger.IsColonyMember(p))) return;
                     HandleDamageTaken(entry);
                     return;
                 }
@@ -101,8 +101,12 @@ namespace Firefly
             string weapon      = weaponDef?.label;
 
             bool reachedTarget       = recipientPawn != null && recipientPawn == originalTargetPawn;
-            bool initiatorIsColonist = initiatorPawn?.IsColonist == true;
-            if (!initiatorIsColonist && !(originalTargetPawn?.IsColonist == true)) return;
+            bool initiatorIsColonist = ColonyLedger.IsColonyMember(initiatorPawn);
+            if (!initiatorIsColonist && !ColonyLedger.IsColonyMember(originalTargetPawn))
+            {
+                ColonyLedger.Current?.CaptureFactionCombat(initiatorPawn?.Faction, originalTargetPawn?.Faction, Find.TickManager.TicksAbs);
+                return;
+            }
 
             string coverHit = null;
             if (!reachedTarget)
@@ -134,8 +138,12 @@ namespace Firefly
 
             string ruleDefName       = ruleDef?.defName ?? "";
             bool reachedTarget       = !ruleDefName.Contains("Dodge") && !ruleDefName.Contains("Miss");
-            bool initiatorIsColonist = initiator?.IsColonist == true;
-            if (!initiatorIsColonist && !(recipientPawn?.IsColonist == true)) return;
+            bool initiatorIsColonist = ColonyLedger.IsColonyMember(initiator);
+            if (!initiatorIsColonist && !ColonyLedger.IsColonyMember(recipientPawn))
+            {
+                ColonyLedger.Current?.CaptureFactionCombat(initiator?.Faction, recipientPawn?.Faction, Find.TickManager.TicksAbs);
+                return;
+            }
             string coverHit          = ruleDefName.Contains("Dodge") ? $"{targetName} dodging" : null;
 
             var colonistPawn = initiatorIsColonist ? initiator : recipientPawn;
@@ -149,7 +157,7 @@ namespace Firefly
         {
             Pawn        recipientPawn = Read<Pawn>(DamageTakenRecipientPawn, entry);
             RulePackDef ruleDef       = Read<RulePackDef>(DamageTakenRuleDef, entry);
-            if (recipientPawn == null || !recipientPawn.IsColonist) return;
+            if (!ColonyLedger.IsColonyMember(recipientPawn)) return;
             string victim      = ColonyLedger.PawnFullName(recipientPawn);
             string hazardLabel = GetHazardLabel(ruleDef);
             ColonyLedger.Current?.CaptureHazardEvent(victim, hazardLabel, entry as LogEntry_DamageResult, recipientPawn);

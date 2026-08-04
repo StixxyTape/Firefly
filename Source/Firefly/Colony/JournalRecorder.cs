@@ -175,6 +175,7 @@ namespace Firefly
                 float lon = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
                 var (combatContent, hazardContent) = _ledger.FlushDrainedSections(lon);
 
+                _ledger.EnsureCaptivesIntroduced(map);
                 string rosterSection   = _ledger.BuildPawnRosterSection();
                 string timelineContent = _ledger.GetCurrentDayContent();
 

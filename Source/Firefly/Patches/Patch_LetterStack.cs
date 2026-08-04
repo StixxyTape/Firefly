@@ -18,13 +18,16 @@ namespace Firefly
                 // Disease/injury/internal event letters have no relatedFaction.
                 if (let.relatedFaction == null || let.relatedFaction == Faction.OfPlayer) return;
 
-                var pawn = let.lookTargets?.PrimaryTarget.Thing as Pawn;
+                string archiveLabel = (let as IArchivable)?.ArchivedLabel;
+
+                Pawn pawn = let.lookTargets?.PrimaryTarget.Thing as Pawn;
+
+                Log.Message($"[Firefly] Letter '{archiveLabel}': faction={let.relatedFaction?.Name}, resolved pawn={pawn?.LabelShort ?? "null"}");
+
                 if (pawn == null || pawn.IsFreeColonist || pawn.IsPrisonerOfColony || pawn.IsSlaveOfColony) return;
+                if (archiveLabel.NullOrEmpty()) return;
 
-                string label = (let as IArchivable)?.ArchivedLabel;
-                if (label.NullOrEmpty()) return;
-
-                ledger.IntroduceEventLeader(pawn, label, Find.TickManager.TicksAbs);
+                ledger.IntroduceEventLeader(pawn, archiveLabel, Find.TickManager.TicksAbs);
             }
             catch { }
         }
