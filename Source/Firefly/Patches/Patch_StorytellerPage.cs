@@ -31,7 +31,7 @@ namespace Firefly
 
             Text.Font   = GameFont.Small;
             Text.Anchor = TextAnchor.MiddleLeft;
-            Widgets.CheckboxLabeled(new Rect(x, y, w, BtnH), "Firefly LLM", ref FireflyEnabled);
+            Widgets.CheckboxLabeled(new Rect(x, y, w, BtnH), "Firefly (Experimental)", ref FireflyEnabled);
             TooltipHandler.TipRegion(new Rect(x, y, w, BtnH),
                 "Enable the Firefly journal for this colony. Events are recorded and summarised daily by an AI narrator.");
             Text.Anchor = TextAnchor.UpperLeft;
