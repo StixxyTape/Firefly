@@ -5,5 +5,6 @@
     <label>journal</label>
     <order>14</order>
     <tabWindowClass>Firefly.MainTabWindow_Journal</tabWindowClass>
+    <workerClass>Firefly.MainButtonWorker_FireflyJournal</workerClass>
   </MainButtonDef>
 </Defs>

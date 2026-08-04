@@ -14,6 +14,8 @@ namespace Firefly
         private bool _fireflyEnabled = true;
         private bool _loadedFromSave = false;
 
+        public bool FireflyEnabled => _fireflyEnabled;
+
         public FireflyGameComponent(Game game)
         {
             Recorder = new JournalRecorder(Ledger);
