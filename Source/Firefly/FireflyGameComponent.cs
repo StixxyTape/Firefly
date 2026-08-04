@@ -8,12 +8,11 @@ namespace Firefly
     // per loaded save and discards it on unload, so no state can leak from one colony into the next.
     public class FireflyGameComponent : GameComponent
     {
-        private const int StorytellerCheckInterval = 2000;
-
         public ColonyLedger    Ledger   = new ColonyLedger();
         public JournalRecorder Recorder;
 
-        private int _tickCounter;
+        private bool _fireflyEnabled = true;
+        private bool _loadedFromSave = false;
 
         public FireflyGameComponent(Game game)
         {
@@ -22,31 +21,35 @@ namespace Firefly
 
         public override void FinalizeInit()
         {
-            try { RefreshEnabled(); }
+            try
+            {
+                // New game: read the choice made on the storyteller selection page.
+                // Loaded save: _loadedFromSave is true, keep the persisted value.
+                if (!_loadedFromSave)
+                    _fireflyEnabled = Patch_StorytellerPage.FireflyEnabled;
+                RefreshEnabled();
+            }
             catch (Exception e) { Log.Warning($"[Firefly] FinalizeInit failed: {e.Message}"); }
         }
 
-        // Re-checked periodically because the storyteller can be swapped mid-game.
         private void RefreshEnabled()
         {
-            bool isFillion = Find.Storyteller?.def?.defName == "Fillion";
-            Ledger.SetEnabled(isFillion);
-            Recorder.SetEnabled(isFillion);
+            Ledger.SetEnabled(_fireflyEnabled);
+            Recorder.SetEnabled(_fireflyEnabled);
         }
 
         public override void GameComponentTick()
         {
             MainThreadQueue.Drain();
-
-            _tickCounter++;
-            if (_tickCounter % StorytellerCheckInterval == 0) RefreshEnabled();
-
             Recorder.Tick();
         }
 
         public override void ExposeData()
         {
             base.ExposeData();
+            Scribe_Values.Look(ref _fireflyEnabled, "fireflyEnabled", true);
+            if (Scribe.mode == LoadSaveMode.LoadingVars)
+                _loadedFromSave = true;
             Ledger.ExposeData();
             Recorder.ExposeData();
         }

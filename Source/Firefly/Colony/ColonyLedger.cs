@@ -66,10 +66,9 @@ namespace Firefly
         private bool _enabled     = false;
         public  int  RecordingDay => _recordingDay;
 
-        // Fillion is the active storyteller right now. Unlike _initialized (a one-time latch that
-        // only skips pre-existing history on first activation), this tracks live state — set by
-        // FireflyGameComponent whenever the storyteller is swapped — so Harmony-patched capture
-        // stops the moment the player switches away, instead of running for the rest of the save.
+        // Whether Firefly is enabled for this save. Set once at game start from the player's choice
+        // on the storyteller page and persisted to the save file. Gates all capture entry points so
+        // the mod is fully inert when the player opted out.
         public void SetEnabled(bool enabled) => _enabled = enabled;
 
         private const int MaxAnnouncedBattles = 4000;

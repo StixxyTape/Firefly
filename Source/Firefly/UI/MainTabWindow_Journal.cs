@@ -51,7 +51,7 @@ namespace Firefly
             if (!hasToday && past.Count == 0 && ledger.ColonyHistory.NullOrEmpty())
             {
                 Widgets.Label(inRect.ContractedBy(Pad),
-                    "No journal entries yet.\n\nThe journal starts recording once Fillion is your active storyteller.");
+                    "No journal entries yet.\n\nThe journal will begin recording at the start of the next in-game day.");
                 return;
             }
 
