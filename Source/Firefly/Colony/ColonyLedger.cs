@@ -63,7 +63,14 @@ namespace Firefly
 
         private int  _recordingDay;
         private bool _initialized = false;
+        private bool _enabled     = false;
         public  int  RecordingDay => _recordingDay;
+
+        // Fillion is the active storyteller right now. Unlike _initialized (a one-time latch that
+        // only skips pre-existing history on first activation), this tracks live state — set by
+        // FireflyGameComponent whenever the storyteller is swapped — so Harmony-patched capture
+        // stops the moment the player switches away, instead of running for the rest of the save.
+        public void SetEnabled(bool enabled) => _enabled = enabled;
 
         private const int MaxAnnouncedBattles = 4000;
         private HashSet<string>         _announcedBattles     = new HashSet<string>();
@@ -105,7 +112,7 @@ namespace Firefly
 
         public void CaptureBattleEvent(string initiator, string initiatorId, string target, string targetId, bool reachedTarget, string weapon, string coverHit, bool initiatorIsColonist, string battleId, LogEntry_DamageResult entry, Pawn initiatorPawn = null, Pawn targetPawn = null)
         {
-            if (!_initialized) return;
+            if (!_initialized || !_enabled) return;
             bool didDamage = false;
             bool deflected = false;
             if (entry != null)
@@ -152,13 +159,13 @@ namespace Firefly
 
         public void CaptureStateChange(string targetName, string text)
         {
-            if (!_initialized || targetName.NullOrEmpty()) return;
+            if (!_initialized || !_enabled || targetName.NullOrEmpty()) return;
             AppendEvent(Find.TickManager.TicksAbs, text + ".");
         }
 
         public void CaptureOutcome(string subject, string subjectId, string outcome, string initiator, string cause)
         {
-            if (!_initialized || subject.NullOrEmpty()) return;
+            if (!_initialized || !_enabled || subject.NullOrEmpty()) return;
             long tick = 0L;
             try { tick = Find.TickManager.TicksAbs; } catch { }
             lock (_capturedOutcomes)
@@ -209,7 +216,7 @@ namespace Firefly
 
         public void CaptureMessage(Message msg)
         {
-            if (!_initialized || msg?.text.NullOrEmpty() != false) return;
+            if (!_initialized || !_enabled || msg?.text.NullOrEmpty() != false) return;
             IntroduceFromTargets(msg.lookTargets);
             AppendEvent(Find.TickManager.TicksAbs, StripTags(msg.text));
         }
@@ -227,7 +234,7 @@ namespace Firefly
 
         public void CaptureHazardEvent(string victim, string hazardLabel, LogEntry_DamageResult entry, Pawn victimPawn = null)
         {
-            if (!_initialized) return;
+            if (!_initialized || !_enabled) return;
             bool didDamage = false;
             if (entry != null)
             {
@@ -246,7 +253,7 @@ namespace Firefly
 
         public void CaptureDecision(string formattedText)
         {
-            if (!_initialized || formattedText.NullOrEmpty()) return;
+            if (!_initialized || !_enabled || formattedText.NullOrEmpty()) return;
             AppendEvent(Find.TickManager.TicksAbs, StripTags(formattedText));
         }
 
@@ -1129,13 +1136,13 @@ namespace Firefly
 
         public void AppendRawToTimeline(string content)
         {
-            if (!_initialized || content.NullOrEmpty()) return;
+            if (!_initialized || !_enabled || content.NullOrEmpty()) return;
             lock (_timelineBuffer) _timelineBuffer.Append(content);
         }
 
         internal void AppendEvent(long tick, string text)
         {
-            if (!_initialized) return;
+            if (!_initialized || !_enabled) return;
             try
             {
                 float lon = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
@@ -1188,7 +1195,7 @@ namespace Firefly
 
         public string IntroduceTag(Pawn pawn)
         {
-            if (!_initialized || pawn == null) return "";
+            if (!_initialized || !_enabled || pawn == null) return "";
             string id = pawn.ThingID;
             if (id.NullOrEmpty()) return "";
             bool isNew;

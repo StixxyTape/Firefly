@@ -30,6 +30,7 @@ namespace Firefly
         private void RefreshEnabled()
         {
             bool isFillion = Find.Storyteller?.def?.defName == "Fillion";
+            Ledger.SetEnabled(isFillion);
             Recorder.SetEnabled(isFillion);
         }
 
