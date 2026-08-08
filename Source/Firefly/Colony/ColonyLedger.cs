@@ -280,7 +280,9 @@ namespace Firefly
                 Log.Message("[Firefly] Ledger initialized — skipping historical events.");
             }
 
-            _recordingDay = _pastDays.Count;
+            // _recordingDay is explicit persisted state (advanced by AddDailyRecord when a day
+            // archives), not derived from _pastDays.Count — that would break under any future
+            // retention/compaction that prunes old records.
 
             long  snapshotTick = Find.TickManager.TicksAbs;
             float lon          = Find.WorldGrid?.LongLatOf(map.Tile).x ?? 0f;
@@ -484,7 +486,11 @@ namespace Firefly
 
         // ── Past-day management ───────────────────────────────────────────────
 
-        public void AddDailyRecord(DailyRecord record) => _pastDays.Add(record);
+        public void AddDailyRecord(DailyRecord record)
+        {
+            _pastDays.Add(record);
+            _recordingDay = record.Day + 1;
+        }
 
         public void SetDailySummary(int day, string summary)
         {

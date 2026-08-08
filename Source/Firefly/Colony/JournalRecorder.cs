@@ -34,6 +34,12 @@ namespace Firefly
 
         public void SetEnabled(bool enabled) => _enabled = enabled;
 
+        // Writing through _ledger directly (not ColonyLedger.Current) already stops a stale
+        // callback from corrupting whichever save is now loaded — but without this check it
+        // would still silently keep working (and spending API calls) for a save that's no
+        // longer active. Gates every callback that would otherwise chain into more LLM work.
+        private bool IsStillActive => ReferenceEquals(ColonyLedger.Current, _ledger);
+
         public void ExposeData()
         {
             Scribe_Values.Look(ref _lastHourBucket,  "journalLastHourBucket",  -1);
@@ -238,26 +244,39 @@ namespace Firefly
                 prompt,
                 onSuccess: summary =>
                 {
-                    if (!ReferenceEquals(_ledger, ColonyLedger.Current)) return;
-                    _ledger.SetDailySummary(day, summary);
+                    // Write through the ledger instance this request was made for, not
+                    // ColonyLedger.Current — the player may have switched saves while this
+                    // callback was in flight, and Current would then point at a different colony.
+                    _ledger?.SetDailySummary(day, summary);
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
-                    MaybeSendArcSummary(day);
+                    if (!IsStillActive) return;
+                    MaybeSendArcSummary();
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
         }
 
-        private void MaybeSendArcSummary(int throughDay)
+        // Only folds in a contiguous run of summarised days starting right after LastArcDay —
+        // if an earlier day's summary is still in flight (e.g. backfill racing a fresh daily
+        // request), it stays un-arced rather than getting silently skipped forever once a later
+        // day's completion advances the watermark past it.
+        private int ComputeContiguousArcThroughDay()
+        {
+            int throughDay = _ledger.LastArcDay;
+            foreach (var record in _ledger.PastDays
+                         .Where(d => d.Day > _ledger.LastArcDay)
+                         .OrderBy(d => d.Day))
+            {
+                if (record.Day != throughDay + 1 || record.Summary.NullOrEmpty()) break;
+                throughDay = record.Day;
+            }
+            return throughDay;
+        }
+
+        private void MaybeSendArcSummary()
         {
             if (_arcInFlight || _ledger == null) return;
-            if (throughDay < ArcIntervalDays) return;
-            // Require every record in the candidate window to be summarized — if any are still
-            // pending (backfill in progress), wait rather than baking an incomplete arc.
-            var eligible = _ledger.PastDays
-                .Where(d => d != null && d.Day > _ledger.LastArcDay && d.Day <= throughDay)
-                .OrderBy(d => d.Day)
-                .ToList();
-            if (eligible.Count < ArcIntervalDays) return;
-            if (eligible.Any(d => d.Summary.NullOrEmpty())) return;
+            int throughDay = ComputeContiguousArcThroughDay();
+            if (throughDay - _ledger.LastArcDay < ArcIntervalDays) return;
             SendArcSummaryRequest(throughDay);
         }
 
@@ -304,8 +323,8 @@ namespace Firefly
                     onSuccess: arcText =>
                     {
                         _arcInFlight = false;
-                        if (!ReferenceEquals(_ledger, ColonyLedger.Current)) return;
-                        _ledger.SetColonyHistory(arcText, day);
+                        if (!IsStillActive) return;
+                        _ledger?.SetColonyHistory(arcText, day);
                         Log.Message($"[Firefly] Colony history updated through Day {day}");
                     },
                     onError: err =>
@@ -333,7 +352,7 @@ namespace Firefly
             if (pending.Count == 0)
             {
                 // No missing summaries — check whether an overdue arc should fire.
-                if (_lastArchivedDay > 0) MaybeSendArcSummary(_lastArchivedDay);
+                if (_lastArchivedDay > 0) MaybeSendArcSummary();
                 return;
             }
 
@@ -354,7 +373,7 @@ namespace Firefly
         {
             // Stop processing if the game has changed — avoid spending API calls for a
             // colony that's no longer loaded.
-            if (!ReferenceEquals(_ledger, ColonyLedger.Current))
+            if (!IsStillActive)
             {
                 _backfillQueue.Clear();
                 _backfillActive = false;
@@ -364,7 +383,7 @@ namespace Firefly
             if (_backfillQueue.Count == 0)
             {
                 _backfillActive = false;
-                if (_lastArchivedDay > 0) MaybeSendArcSummary(_lastArchivedDay);
+                if (_lastArchivedDay > 0) MaybeSendArcSummary();
                 return;
             }
 
@@ -375,8 +394,10 @@ namespace Firefly
                 record.Timeline,
                 onSuccess: summary =>
                 {
-                    if (ReferenceEquals(_ledger, ColonyLedger.Current))
-                        _ledger.SetDailySummary(record.Day, summary);
+                    // Don't gate the write itself — mutating a detached ledger is harmless, it's
+                    // discarded once out of scope. ProcessBackfillQueue's own entry guard above
+                    // is what stops the queue from chaining further paid requests once stale.
+                    _ledger?.SetDailySummary(record.Day, summary);
                     ProcessBackfillQueue();
                 },
                 onError: err =>

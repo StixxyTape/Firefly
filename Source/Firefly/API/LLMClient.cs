@@ -110,6 +110,7 @@ namespace Firefly
 
             string lastError = null;
             const int maxAttempts = 3;
+            const int maxErrorChars = 500;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
@@ -131,37 +132,41 @@ namespace Firefly
                         max_tokens = 2048
                     });
 
-                    var request = new HttpRequestMessage(HttpMethod.Post, url)
+                    using (var request = new HttpRequestMessage(HttpMethod.Post, url)
                     {
                         Content = new StringContent(payload, Encoding.UTF8, "application/json")
-                    };
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-                    request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
-                    request.Headers.Add("X-Title", "Firefly");
-
-                    var response = await Http.SendAsync(request);
-                    var body = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
+                    })
                     {
-                        int code = (int)response.StatusCode;
-                        lastError = $"HTTP {code}: {body}";
-                        Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
-                        // Bad key, bad model, bad request — retrying changes nothing. Only 429 is worth another try.
-                        if (code >= 400 && code < 500 && code != 429) break;
-                        continue;
-                    }
+                        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                        request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
+                        request.Headers.Add("X-Title", "Firefly");
 
-                    var content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
-                    if (content == null)
-                    {
-                        lastError = "Malformed response — no content field in reply.";
-                        Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
-                        continue;
-                    }
+                        using (var response = await Http.SendAsync(request))
+                        {
+                            var body = await response.Content.ReadAsStringAsync();
 
-                    MainThreadQueue.Enqueue(() => onSuccess(content));
-                    return;
+                            if (!response.IsSuccessStatusCode)
+                            {
+                                int code = (int)response.StatusCode;
+                                lastError = $"HTTP {code}: {Truncate(body, maxErrorChars)}";
+                                Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                // Bad key, bad model, bad request — retrying changes nothing. Only 429 is worth another try.
+                                if (code >= 400 && code < 500 && code != 429) break;
+                                continue;
+                            }
+
+                            var content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
+                            if (content == null)
+                            {
+                                lastError = "Malformed response — no content field in reply.";
+                                Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                continue;
+                            }
+
+                            MainThreadQueue.Enqueue(() => onSuccess(content));
+                            return;
+                        }
+                    }
                 }
                 catch (TaskCanceledException)
                 {
@@ -170,12 +175,18 @@ namespace Firefly
                 }
                 catch (Exception e)
                 {
-                    lastError = e.Message;
+                    lastError = Truncate(e.Message, maxErrorChars);
                     Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
                 }
             }
 
             MainThreadQueue.Enqueue(() => onError($"Request failed. Last error: {lastError}"));
+        }
+
+        private static string Truncate(string text, int maxChars)
+        {
+            if (text == null || text.Length <= maxChars) return text;
+            return text.Substring(0, maxChars) + "… (truncated)";
         }
     }
 }
