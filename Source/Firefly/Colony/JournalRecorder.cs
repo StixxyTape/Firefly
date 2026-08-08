@@ -34,6 +34,12 @@ namespace Firefly
 
         public void SetEnabled(bool enabled) => _enabled = enabled;
 
+        // Writing through _ledger directly (not ColonyLedger.Current) already stops a stale
+        // callback from corrupting whichever save is now loaded — but without this check it
+        // would still silently keep working (and spending API calls) for a save that's no
+        // longer active. Gates every callback that would otherwise chain into more LLM work.
+        private bool IsStillActive => ReferenceEquals(ColonyLedger.Current, _ledger);
+
         public void ExposeData()
         {
             Scribe_Values.Look(ref _lastHourBucket,  "journalLastHourBucket",  -1);
@@ -235,17 +241,39 @@ namespace Firefly
                 prompt,
                 onSuccess: summary =>
                 {
-                    ColonyLedger.Current?.SetDailySummary(day, summary);
+                    // Write through the ledger instance this request was made for, not
+                    // ColonyLedger.Current — the player may have switched saves while this
+                    // callback was in flight, and Current would then point at a different colony.
+                    _ledger?.SetDailySummary(day, summary);
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
-                    MaybeSendArcSummary(day);
+                    if (!IsStillActive) return;
+                    MaybeSendArcSummary();
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
         }
 
-        private void MaybeSendArcSummary(int throughDay)
+        // Only folds in a contiguous run of summarised days starting right after LastArcDay —
+        // if an earlier day's summary is still in flight (e.g. backfill racing a fresh daily
+        // request), it stays un-arced rather than getting silently skipped forever once a later
+        // day's completion advances the watermark past it.
+        private int ComputeContiguousArcThroughDay()
         {
-            if (_arcInFlight || throughDay < ArcIntervalDays) return;
-            if (throughDay - (_ledger?.LastArcDay ?? 0) < ArcIntervalDays) return;
+            int throughDay = _ledger.LastArcDay;
+            foreach (var record in _ledger.PastDays
+                         .Where(d => d.Day > _ledger.LastArcDay)
+                         .OrderBy(d => d.Day))
+            {
+                if (record.Day != throughDay + 1 || record.Summary.NullOrEmpty()) break;
+                throughDay = record.Day;
+            }
+            return throughDay;
+        }
+
+        private void MaybeSendArcSummary()
+        {
+            if (_arcInFlight || _ledger == null) return;
+            int throughDay = ComputeContiguousArcThroughDay();
+            if (throughDay - _ledger.LastArcDay < ArcIntervalDays) return;
             SendArcSummaryRequest(throughDay);
         }
 
@@ -292,7 +320,8 @@ namespace Firefly
                     onSuccess: arcText =>
                     {
                         _arcInFlight = false;
-                        ColonyLedger.Current?.SetColonyHistory(arcText, day);
+                        if (!IsStillActive) return;
+                        _ledger?.SetColonyHistory(arcText, day);
                         Log.Message($"[Firefly] Colony history updated through Day {day}");
                     },
                     onError: err =>
@@ -332,7 +361,7 @@ namespace Firefly
             if (_backfillQueue.Count == 0)
             {
                 _backfillActive = false;
-                if (_lastArchivedDay > 0) MaybeSendArcSummary(_lastArchivedDay);
+                if (_lastArchivedDay > 0) MaybeSendArcSummary();
                 return;
             }
 
@@ -343,12 +372,14 @@ namespace Firefly
                 record.Timeline,
                 onSuccess: summary =>
                 {
-                    ColonyLedger.Current?.SetDailySummary(record.Day, summary);
+                    _ledger?.SetDailySummary(record.Day, summary);
+                    if (!IsStillActive) { _backfillActive = false; _backfillQueue.Clear(); return; }
                     ProcessBackfillQueue();
                 },
                 onError: err =>
                 {
                     Log.Warning($"[Firefly] Backfill failed for Day {record.Day}: {err}");
+                    if (!IsStillActive) { _backfillActive = false; _backfillQueue.Clear(); return; }
                     ProcessBackfillQueue();
                 });
         }

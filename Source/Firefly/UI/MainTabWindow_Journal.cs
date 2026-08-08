@@ -491,9 +491,11 @@ namespace Firefly
                 return;
             }
 
-            // Block typed characters so the area is read-only but still selectable/copyable
+            // Block typed characters so the area is read-only but still selectable/copyable —
+            // only while this specific text box holds focus, so typing elsewhere (e.g. game
+            // hotkeys) isn't swallowed just because a journal text box exists on screen.
             var ev = Event.current;
-            if (ev.type == EventType.KeyDown && ev.character != '\0')
+            if (ev.type == EventType.KeyDown && ev.character != '\0' && GUI.GetNameOfFocusedControl() == controlKey)
                 ev.Use();
 
             var   style  = SelectableStyle;
