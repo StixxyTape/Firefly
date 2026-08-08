@@ -43,24 +43,35 @@ namespace Firefly
         {
             // Single choke point for every narrative request — max_tokens caps the reply, not the
             // prompt, and a raid-heavy day produces a log far larger than most context windows.
-            userPrompt = TruncateForPrompt(userPrompt, FireflyMod.Settings.MaxPromptChars);
+            var settings = FireflyMod.Settings;
+            userPrompt = TruncateForPrompt(userPrompt, settings.MaxPromptChars);
 
             var messages = new List<ChatMessage>
             {
                 new ChatMessage("system", systemPrompt),
                 new ChatMessage("user", userPrompt)
             };
-            Task.Run(async () => await SendAsync(messages, onSuccess, onError));
+            // Snapshot mutable settings before the background thread starts so mid-edit changes
+            // don't produce a mixed-config request across retry attempts.
+            string apiKey  = settings.ApiKey  ?? "";
+            string baseUrl = settings.BaseUrl ?? "";
+            string model   = settings.Model   ?? "";
+            Task.Run(async () => await SendAsync(messages, apiKey, baseUrl, model, onSuccess, onError));
         }
 
         public static void TestConnection(Action<bool, string> onResult)
         {
+            var settings = FireflyMod.Settings;
+            string apiKey  = settings.ApiKey  ?? "";
+            string baseUrl = settings.BaseUrl ?? "";
+            string model   = settings.Model   ?? "";
             var messages = new List<ChatMessage>
             {
                 new ChatMessage("user", "Reply with only the word: ok")
             };
             Task.Run(async () => await SendAsync(
                 messages,
+                apiKey, baseUrl, model,
                 response => onResult(true, response.Trim()),
                 error => onResult(false, error)
             ));
@@ -85,12 +96,13 @@ namespace Firefly
 
         private static async Task SendAsync(
             List<ChatMessage> messages,
+            string apiKey,
+            string baseUrl,
+            string model,
             Action<string> onSuccess,
             Action<string> onError)
         {
-            var settings = FireflyMod.Settings;
-
-            if (settings.ApiKey.NullOrEmpty())
+            if (apiKey.NullOrEmpty())
             {
                 MainThreadQueue.Enqueue(() => onError("No API key set — configure one in Mod Settings."));
                 return;
@@ -106,7 +118,7 @@ namespace Firefly
 
                 try
                 {
-                    var url = settings.BaseUrl.TrimEnd('/') + "/chat/completions";
+                    var url = baseUrl.TrimEnd('/') + "/chat/completions";
 
                     var messagePayloads = new List<object>();
                     foreach (var m in messages)
@@ -114,8 +126,8 @@ namespace Firefly
 
                     var payload = JsonConvert.SerializeObject(new
                     {
-                        model = settings.Model,
-                        messages = messagePayloads,
+                        model      = model,
+                        messages   = messagePayloads,
                         max_tokens = 2048
                     });
 
@@ -123,7 +135,7 @@ namespace Firefly
                     {
                         Content = new StringContent(payload, Encoding.UTF8, "application/json")
                     };
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                     request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
                     request.Headers.Add("X-Title", "Firefly");
 

@@ -30,6 +30,10 @@ namespace Firefly
                 if (!_loadedFromSave)
                     _fireflyEnabled = Patch_StorytellerPage.FireflyEnabled;
                 RefreshEnabled();
+                // On load, kick off backfill for any days that have a timeline but no summary
+                // (e.g. days whose LLM request failed last session).
+                if (_loadedFromSave && _fireflyEnabled)
+                    Recorder.TriggerBackfillOnLoad();
             }
             catch (Exception e) { Log.Warning($"[Firefly] FinalizeInit failed: {e.Message}"); }
         }

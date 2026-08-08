@@ -9,6 +9,14 @@ namespace Firefly
     // the storyteller selection page, sitting between the Back button and the vanilla hint label.
     // The choice is read by FireflyGameComponent.FinalizeInit() on new game start and
     // persisted to the save file from that point on.
+    // Reset the toggle to its default each time the storyteller page opens so the choice
+    // never leaks across multiple new-game flows within the same session.
+    [HarmonyPatch(typeof(Page_SelectStoryteller), "PostOpen")]
+    public static class Patch_StorytellerPage_PostOpen
+    {
+        static void Postfix() => Patch_StorytellerPage.FireflyEnabled = true;
+    }
+
     [HarmonyPatch(typeof(Page_SelectStoryteller), nameof(Page_SelectStoryteller.DoWindowContents))]
     public static class Patch_StorytellerPage
     {

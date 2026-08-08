@@ -13,6 +13,7 @@ namespace Firefly
         // Special nav IDs
         private const int NavToday  = -1;
         private const int NavColony = -2;
+        private const int NavSeeds  = -3;
 
         private const float NavW  = 148f;
         private const float Pad   = 5f;
@@ -27,13 +28,16 @@ namespace Firefly
         private static readonly Color AcHistory = new Color(0.92f, 0.78f, 0.38f);
         private static readonly Color AcToday   = new Color(1.00f, 0.88f, 0.28f);
         private static readonly Color AcQuests  = new Color(0.68f, 0.48f, 0.88f);
+        private static readonly Color AcSeeds   = new Color(0.88f, 0.52f, 0.72f);
 
         private int    _nav     = NavToday;
         private string _section = "EVENTS";
 
         private readonly Dictionary<int, string>    _navSectionMemory = new Dictionary<int, string>();
         private readonly Dictionary<string, Vector2> _scrolls         = new Dictionary<string, Vector2>();
-        private Vector2 _navScroll = Vector2.zero;
+        private Vector2 _navScroll      = Vector2.zero;
+        private string  _selectedSeedId = null;
+        private Vector2 _seedListScroll = Vector2.zero;
 
         public override Vector2 RequestedTabSize => new Vector2(1000f, 430f);
 
@@ -48,7 +52,7 @@ namespace Firefly
             int  today    = ledger.RecordingDay;
             bool hasToday = !past.Any(d => d.Day == today);
 
-            if (!hasToday && past.Count == 0 && ledger.ColonyHistory.NullOrEmpty())
+            if (!hasToday && past.Count == 0 && ledger.ColonyHistory.NullOrEmpty() && ledger.StorySeeds.Count == 0)
             {
                 Widgets.Label(inRect.ContractedBy(Pad),
                     "No journal entries yet.\n\nThe journal will begin recording at the start of the next in-game day.");
@@ -78,12 +82,13 @@ namespace Firefly
         private void DrawNav(Rect rect, bool hasToday, int today, IReadOnlyList<DailyRecord> past)
         {
             const float rowH = 26f;
-            int rows = (hasToday ? 1 : 0) + 1 + (past.Count > 0 ? past.Count + 1 : 0);
+            int rows = (hasToday ? 1 : 0) + 2 + (past.Count > 0 ? past.Count + 1 : 0);
             var view = new Rect(0f, 0f, rect.width - 16f, Mathf.Max(rows * rowH, rect.height));
             Widgets.BeginScrollView(rect, ref _navScroll, view);
 
             float y = 0f;
             y = NavRow(y, view.width, rowH, NavColony, "Colony", "◆", AcHistory);
+            y = NavRow(y, view.width, rowH, NavSeeds,  "Seeds",  "◆", AcSeeds);
 
             if (hasToday || past.Count > 0)
             {
@@ -157,6 +162,7 @@ namespace Firefly
         {
             if (_nav == NavToday && hasToday) { DrawToday(rect, ledger, today); return; }
             if (_nav == NavColony)            { DrawColony(rect, ledger);        return; }
+            if (_nav == NavSeeds)             { DrawSeeds(rect, ledger);         return; }
 
             var rec = past.FirstOrDefault(d => d.Day == _nav);
             if (rec != null) DrawDay(rect, rec, past);
@@ -204,6 +210,128 @@ namespace Firefly
                     : history),
             };
             DrawSectioned(rect, secs, "colony", AcHistory, "COLONY HISTORY");
+        }
+
+        // ── Story seeds view ──────────────────────────────────────────────────
+
+        private void DrawSeeds(Rect rect, ColonyLedger ledger)
+        {
+            var seeds = ledger.StorySeeds;
+
+            // Shared header
+            float y   = rect.y;
+            GUI.color = AcSeeds;
+            Text.Font = GameFont.Tiny;
+            Widgets.Label(new Rect(rect.x, y, rect.width, 20f), "STORY SEEDS");
+            Text.Font = GameFont.Small;
+            y += 22f;
+            GUI.color = new Color(AcSeeds.r, AcSeeds.g, AcSeeds.b, 0.35f);
+            GUI.DrawTexture(new Rect(rect.x, y, rect.width, 1f), BaseContent.WhiteTex);
+            GUI.color = Color.white;
+            y += 1f + Pad;
+
+            if (seeds.Count == 0)
+            {
+                GUI.color = new Color(0.55f, 0.55f, 0.55f);
+                Widgets.Label(new Rect(rect.x, y, rect.width, rect.yMax - y),
+                    "(No story seeds yet. They will appear here as the narrative develops.)");
+                GUI.color = Color.white;
+                return;
+            }
+
+            // Clamp selected seed to a valid ID
+            if (_selectedSeedId == null || seeds.All(s => s.Id != _selectedSeedId))
+                _selectedSeedId = seeds[0].Id;
+
+            // Split: vertical seed list on the left, detail pane on the right
+            var listRect   = new Rect(rect.x, y, NavW, rect.yMax - y);
+            var divRect    = new Rect(rect.x + NavW, y, 1f, rect.yMax - y);
+            var detailRect = new Rect(rect.x + NavW + 1f + Pad, y,
+                                      rect.width - NavW - 1f - Pad, rect.yMax - y);
+
+            GUI.color = new Color(1f, 1f, 1f, 0.12f);
+            GUI.DrawTexture(divRect, BaseContent.WhiteTex);
+            GUI.color = Color.white;
+
+            // ── Seed list ────────────────────────────────────────────────────
+            const float rowH     = 26f;
+            var         listView = new Rect(0f, 0f, listRect.width - 16f,
+                                            Mathf.Max(seeds.Count * rowH, listRect.height));
+            Widgets.BeginScrollView(listRect, ref _seedListScroll, listView);
+            float ry = 0f;
+            foreach (var seed in seeds)
+            {
+                bool sel = _selectedSeedId == seed.Id;
+                var  row = new Rect(0f, ry, listView.width, rowH);
+
+                if (sel)
+                {
+                    GUI.color = new Color(1f, 1f, 1f, 0.09f);
+                    GUI.DrawTexture(row, BaseContent.WhiteTex);
+                    GUI.color = AcSeeds;
+                    GUI.DrawTexture(new Rect(0f, ry + 3f, 3f, rowH - 6f), BaseContent.WhiteTex);
+                }
+                else if (Mouse.IsOver(row))
+                    Widgets.DrawHighlight(row);
+                GUI.color = Color.white;
+
+                Text.Anchor = TextAnchor.MiddleLeft;
+                GUI.color   = sel ? Color.white : new Color(0.72f, 0.72f, 0.72f);
+                Widgets.Label(new Rect(9f, ry, listView.width - 9f, rowH), seed.Name);
+                GUI.color   = Color.white;
+                Text.Anchor = TextAnchor.UpperLeft;
+
+                if (Widgets.ButtonInvisible(row))
+                    _selectedSeedId = seed.Id;
+
+                ry += rowH;
+            }
+            Widgets.EndScrollView();
+
+            // ── Detail pane ──────────────────────────────────────────────────
+            var selected = seeds.FirstOrDefault(s => s.Id == _selectedSeedId);
+            if (selected == null) return;
+
+            float dy = detailRect.y;
+
+            // Seed name sub-header
+            GUI.color = AcSeeds;
+            Text.Font = GameFont.Tiny;
+            Widgets.Label(new Rect(detailRect.x, dy, detailRect.width, 20f), selected.Name.ToUpperInvariant());
+            Text.Font = GameFont.Small;
+            dy += 20f + 2f;
+            GUI.color = new Color(AcSeeds.r, AcSeeds.g, AcSeeds.b, 0.35f);
+            GUI.DrawTexture(new Rect(detailRect.x, dy, detailRect.width, 1f), BaseContent.WhiteTex);
+            GUI.color = Color.white;
+            dy += 1f + Pad;
+
+            // Build content
+            float lon             = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
+            long  lonOffsetTicks  = (long)(lon / 15f * GenDate.TicksPerHour);
+            var   sb              = new StringBuilder();
+
+            if (!selected.Description.NullOrEmpty())
+                sb.AppendLine(selected.Description.Trim());
+
+            if (selected.Facts.Count > 0)
+            {
+                if (sb.Length > 0) sb.AppendLine();
+                sb.AppendLine("Facts:");
+                foreach (var f in selected.Facts.Where(f => f != null).OrderBy(f => f.Tick))
+                {
+                    long localTick = f.Tick + lonOffsetTicks;
+                    int  day = (int)(localTick / GenDate.TicksPerDay);
+                    int  hr  = (int)((localTick % GenDate.TicksPerDay) / GenDate.TicksPerHour);
+                    int  min = (int)((localTick % GenDate.TicksPerHour) * 60 / GenDate.TicksPerHour);
+                    sb.AppendLine($"  - [Day {day}, {hr:D2}:{min:D2}] {f.Text}");
+                }
+            }
+
+            string scrollKey   = $"seed_{selected.Id}";
+            _scrolls.TryGetValue(scrollKey, out Vector2 scroll);
+            var contentRect = new Rect(detailRect.x, dy, detailRect.width, detailRect.yMax - dy);
+            DrawTextBox(contentRect, sb.ToString().TrimEnd(), AcSeeds, ref scroll, scrollKey);
+            _scrolls[scrollKey] = scroll;
         }
 
         // ── Past day view ─────────────────────────────────────────────────────
@@ -530,6 +658,8 @@ namespace Firefly
         {
             base.PreOpen();
             _scrolls.Clear();
+            _seedListScroll = Vector2.zero;
+            _selectedSeedId = null;
         }
     }
 }

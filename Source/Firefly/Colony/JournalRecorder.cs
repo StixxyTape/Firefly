@@ -180,7 +180,6 @@ namespace Firefly
                 string timelineContent = _ledger.GetCurrentDayContent();
 
                 string questSnapshot = _ledger.BuildMentionedQuestsSnapshot();
-                _ledger.Clear();
 
                 // Insert pawn roster between the day header and === EVENTS ===
                 if (!rosterSection.NullOrEmpty())
@@ -202,12 +201,16 @@ namespace Firefly
                     hazardContent.NullOrEmpty() ? "" : "\n" + hazardContent,
                     questContent.NullOrEmpty() ? "" : "\n" + questContent);
 
-                if (fullContent.NullOrEmpty()) return;
-
-                _lastArchivedDay = day;
+                if (fullContent.NullOrEmpty())
+                {
+                    _ledger.Clear();
+                    return;
+                }
 
                 var record = new DailyRecord { Day = day, Timeline = fullContent, QuestSnapshot = questSnapshot };
                 _ledger.AddDailyRecord(record);
+                _lastArchivedDay = day;
+                _ledger.Clear();
 
                 SendSummaryRequest(day, fullContent);
                 BackfillMissingSummaries(excludeDay: day);
@@ -235,7 +238,8 @@ namespace Firefly
                 prompt,
                 onSuccess: summary =>
                 {
-                    ColonyLedger.Current?.SetDailySummary(day, summary);
+                    if (!ReferenceEquals(_ledger, ColonyLedger.Current)) return;
+                    _ledger.SetDailySummary(day, summary);
                     Log.Message($"[Firefly] Daily summary written: Day {day}");
                     MaybeSendArcSummary(day);
                 },
@@ -244,8 +248,16 @@ namespace Firefly
 
         private void MaybeSendArcSummary(int throughDay)
         {
-            if (_arcInFlight || throughDay < ArcIntervalDays) return;
-            if (throughDay - (_ledger?.LastArcDay ?? 0) < ArcIntervalDays) return;
+            if (_arcInFlight || _ledger == null) return;
+            if (throughDay < ArcIntervalDays) return;
+            // Require every record in the candidate window to be summarized — if any are still
+            // pending (backfill in progress), wait rather than baking an incomplete arc.
+            var eligible = _ledger.PastDays
+                .Where(d => d != null && d.Day > _ledger.LastArcDay && d.Day <= throughDay)
+                .OrderBy(d => d.Day)
+                .ToList();
+            if (eligible.Count < ArcIntervalDays) return;
+            if (eligible.Any(d => d.Summary.NullOrEmpty())) return;
             SendArcSummaryRequest(throughDay);
         }
 
@@ -292,7 +304,8 @@ namespace Firefly
                     onSuccess: arcText =>
                     {
                         _arcInFlight = false;
-                        ColonyLedger.Current?.SetColonyHistory(arcText, day);
+                        if (!ReferenceEquals(_ledger, ColonyLedger.Current)) return;
+                        _ledger.SetColonyHistory(arcText, day);
                         Log.Message($"[Firefly] Colony history updated through Day {day}");
                     },
                     onError: err =>
@@ -317,7 +330,12 @@ namespace Firefly
                 .OrderBy(d => d.Day)
                 .ToList();
 
-            if (pending.Count == 0) return;
+            if (pending.Count == 0)
+            {
+                // No missing summaries — check whether an overdue arc should fire.
+                if (_lastArchivedDay > 0) MaybeSendArcSummary(_lastArchivedDay);
+                return;
+            }
 
             _backfillQueue.Clear();
             foreach (var record in pending) _backfillQueue.Enqueue(record);
@@ -327,8 +345,22 @@ namespace Firefly
             ProcessBackfillQueue();
         }
 
+        public void TriggerBackfillOnLoad()
+        {
+            BackfillMissingSummaries(excludeDay: -1);
+        }
+
         private void ProcessBackfillQueue()
         {
+            // Stop processing if the game has changed — avoid spending API calls for a
+            // colony that's no longer loaded.
+            if (!ReferenceEquals(_ledger, ColonyLedger.Current))
+            {
+                _backfillQueue.Clear();
+                _backfillActive = false;
+                return;
+            }
+
             if (_backfillQueue.Count == 0)
             {
                 _backfillActive = false;
@@ -343,7 +375,8 @@ namespace Firefly
                 record.Timeline,
                 onSuccess: summary =>
                 {
-                    ColonyLedger.Current?.SetDailySummary(record.Day, summary);
+                    if (ReferenceEquals(_ledger, ColonyLedger.Current))
+                        _ledger.SetDailySummary(record.Day, summary);
                     ProcessBackfillQueue();
                 },
                 onError: err =>

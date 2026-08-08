@@ -93,10 +93,12 @@ namespace Firefly
         private List<DailyRecord> _pastDays      = new List<DailyRecord>();
         private string            _colonyHistory  = "";
         private int               _lastArcDay     = 0;
+        private List<StorySeed>   _storySeeds     = new List<StorySeed>();
 
         public IReadOnlyList<DailyRecord> PastDays      => _pastDays;
         public string                     ColonyHistory  => _colonyHistory;
         public int                        LastArcDay     => _lastArcDay;
+        public IReadOnlyList<StorySeed>   StorySeeds     => _storySeeds;
 
         // ── Live timeline buffer ──────────────────────────────────────────────
         private bool                             _dayHeaderWritten        = false;
@@ -494,6 +496,28 @@ namespace Firefly
         {
             _colonyHistory = history;
             _lastArcDay    = throughDay;
+        }
+
+        // Main-thread only. Queue via MainThreadQueue from async callbacks.
+        public void AddStorySeed(string id, string name, string description)
+        {
+            id   = id?.Trim();
+            name = name?.Trim();
+            if (id.NullOrEmpty() || name.NullOrEmpty()) return;
+            if (_storySeeds.Any(s => s.Id == id)) return;
+            _storySeeds.Add(new StorySeed { Id = id, Name = name, Description = description });
+        }
+
+        // Main-thread only. Queue via MainThreadQueue from async callbacks.
+        public void AddFactToSeed(string seedId, long tick, string text)
+        {
+            seedId = seedId?.Trim();
+            if (seedId.NullOrEmpty() || text.NullOrEmpty()) return;
+            string flat = StripTags(text).Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (flat.NullOrEmpty()) return;
+            var seed = _storySeeds.FirstOrDefault(s => s.Id == seedId);
+            if (seed == null) return;
+            seed.Facts.Add(new StorySeedFact { Tick = tick, Text = flat });
         }
 
         // Full context string for LLM or UI consumption.
@@ -933,6 +957,7 @@ namespace Firefly
             Scribe_Values.Look(ref _lastArcDay,        "lastArcDay",        0);
             Scribe_Values.Look(ref timelineSnapshot,   "timelineBuffer",    "");
             Scribe_Collections.Look(ref _pastDays,          "pastDays",         LookMode.Deep);
+            Scribe_Collections.Look(ref _storySeeds,        "storySeeds",       LookMode.Deep);
             Scribe_Collections.Look(ref pending,            "pendingEvents",    LookMode.Value);
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
@@ -957,7 +982,22 @@ namespace Firefly
                     _timelineBuffer.Append(timelineSnapshot);
             }
 
-            if (_pastDays         == null) _pastDays         = new List<DailyRecord>();
+            if (_pastDays == null) _pastDays = new List<DailyRecord>();
+            if (_storySeeds == null)
+                _storySeeds = new List<StorySeed>();
+            // Normalize IDs, remove nulls/blanks/duplicates, repair Facts lists.
+            var seenSeedIds = new HashSet<string>();
+            _storySeeds.RemoveAll(s =>
+            {
+                if (s == null) return true;
+                s.Id = s.Id?.Trim() ?? "";
+                return s.Id.NullOrEmpty() || !seenSeedIds.Add(s.Id);
+            });
+            foreach (var s in _storySeeds)
+            {
+                if (s.Facts == null) s.Facts = new List<StorySeedFact>();
+                else s.Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty() || f.Text.Trim().Length == 0);
+            }
             if (_colonyHistory    == null) _colonyHistory    = "";
             if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
             if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
@@ -1133,6 +1173,15 @@ namespace Firefly
 
         // ── Timeline buffer ───────────────────────────────────────────────────
 
+        private static Map ResolveMap()
+        {
+            var maps = Find.Maps;
+            if (maps != null)
+                for (int i = 0; i < maps.Count; i++)
+                    if (maps[i] != null && maps[i].IsPlayerHome) return maps[i];
+            return Find.CurrentMap;
+        }
+
         public void AppendRawToTimeline(string content)
         {
             if (!_initialized || !_enabled || content.NullOrEmpty()) return;
@@ -1144,7 +1193,8 @@ namespace Firefly
             if (!_initialized || !_enabled) return;
             try
             {
-                float lon = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
+                Map   map = ResolveMap();
+                float lon = Find.WorldGrid?.LongLatOf(map?.Tile ?? 0).x ?? 0f;
                 int hr  = GenDate.HourInteger(tick, lon);
                 int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
                 string flat = text.Replace("\r\n", " ").Replace('\n', ' ').Trim();
