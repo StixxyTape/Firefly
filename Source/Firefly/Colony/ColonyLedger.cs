@@ -522,7 +522,13 @@ namespace Firefly
             string flat = StripTags(text).Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
             if (flat.NullOrEmpty()) return;
             var seed = _storySeeds.FirstOrDefault(s => s.Id == seedId);
-            if (seed == null) return;
+            if (seed == null)
+            {
+                // Was silent — a create/fact-add ordering mistake would otherwise lose the fact
+                // with no trace. Now at least visible in the log for whoever's calling this.
+                Log.Warning($"[Firefly] AddFactToSeed: no seed with id \"{seedId}\" — fact dropped: {flat}");
+                return;
+            }
             seed.Facts.Add(new StorySeedFact { Tick = tick, Text = flat });
         }
 
@@ -1001,6 +1007,10 @@ namespace Firefly
             });
             foreach (var s in _storySeeds)
             {
+                // Id is validated above (required — it's the lookup key); Name is cosmetic but
+                // the journal UI calls .ToUpperInvariant() on it unguarded, so a null/blank Name
+                // from a corrupted or hand-edited save would throw when the Seeds tab is opened.
+                if (s.Name.NullOrEmpty()) s.Name = "(unnamed)";
                 if (s.Facts == null) s.Facts = new List<StorySeedFact>();
                 else s.Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty() || f.Text.Trim().Length == 0);
             }
