@@ -93,12 +93,12 @@ namespace Firefly
         private List<DailyRecord> _pastDays      = new List<DailyRecord>();
         private string            _colonyHistory  = "";
         private int               _lastArcDay     = 0;
-        private List<StorySeed>   _storySeeds     = new List<StorySeed>();
+        private List<StoryThread>   _storyThreads     = new List<StoryThread>();
 
         public IReadOnlyList<DailyRecord> PastDays      => _pastDays;
         public string                     ColonyHistory  => _colonyHistory;
         public int                        LastArcDay     => _lastArcDay;
-        public IReadOnlyList<StorySeed>   StorySeeds     => _storySeeds;
+        public IReadOnlyList<StoryThread>   StoryThreads     => _storyThreads;
 
         // ── Live timeline buffer ──────────────────────────────────────────────
         private bool                             _dayHeaderWritten        = false;
@@ -505,31 +505,45 @@ namespace Firefly
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
-        public void AddStorySeed(string id, string name, string description)
+        public void AddStoryThread(string id, string name, string description)
         {
             id   = id?.Trim();
             name = name?.Trim();
             if (id.NullOrEmpty() || name.NullOrEmpty()) return;
-            if (_storySeeds.Any(s => s.Id == id)) return;
-            _storySeeds.Add(new StorySeed { Id = id, Name = name, Description = description });
+            if (_storyThreads.Any(s => s.Id == id)) return;
+            _storyThreads.Add(new StoryThread { Id = id, Name = name, Description = description });
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
-        public void AddFactToSeed(string seedId, long tick, string text)
+        public void AddFactToThread(string threadId, long tick, string text)
         {
-            seedId = seedId?.Trim();
-            if (seedId.NullOrEmpty() || text.NullOrEmpty()) return;
+            threadId = threadId?.Trim();
+            if (threadId.NullOrEmpty() || text.NullOrEmpty()) return;
             string flat = StripTags(text).Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
             if (flat.NullOrEmpty()) return;
-            var seed = _storySeeds.FirstOrDefault(s => s.Id == seedId);
-            if (seed == null)
+            var thread = _storyThreads.FirstOrDefault(s => s.Id == threadId);
+            if (thread == null)
             {
                 // Was silent — a create/fact-add ordering mistake would otherwise lose the fact
                 // with no trace. Now at least visible in the log for whoever's calling this.
-                Log.Warning($"[Firefly] AddFactToSeed: no seed with id \"{seedId}\" — fact dropped: {flat}");
+                Log.Warning($"[Firefly] AddFactToThread: no thread with id \"{threadId}\" — fact dropped: {flat}");
                 return;
             }
-            seed.Facts.Add(new StorySeedFact { Tick = tick, Text = flat });
+            thread.Facts.Add(new StoryThreadFact { Tick = tick, Text = flat });
+        }
+
+        // Main-thread only. Queue via MainThreadQueue from async callbacks.
+        public void UpdateStoryThreadSummary(string id, string summary)
+        {
+            id = id?.Trim();
+            if (id.NullOrEmpty() || summary.NullOrEmpty()) return;
+            var thread = _storyThreads.FirstOrDefault(s => s.Id == id);
+            if (thread == null)
+            {
+                Log.Warning($"[Firefly] UpdateStoryThreadSummary: no thread with id \"{id}\" — summary dropped.");
+                return;
+            }
+            thread.Description = summary.Trim();
         }
 
         // Full context string for LLM or UI consumption.
@@ -969,7 +983,7 @@ namespace Firefly
             Scribe_Values.Look(ref _lastArcDay,        "lastArcDay",        0);
             Scribe_Values.Look(ref timelineSnapshot,   "timelineBuffer",    "");
             Scribe_Collections.Look(ref _pastDays,          "pastDays",         LookMode.Deep);
-            Scribe_Collections.Look(ref _storySeeds,        "storySeeds",       LookMode.Deep);
+            Scribe_Collections.Look(ref _storyThreads,        "storyThreads",      LookMode.Deep);
             Scribe_Collections.Look(ref pending,            "pendingEvents",    LookMode.Value);
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
@@ -995,23 +1009,23 @@ namespace Firefly
             }
 
             if (_pastDays == null) _pastDays = new List<DailyRecord>();
-            if (_storySeeds == null)
-                _storySeeds = new List<StorySeed>();
+            if (_storyThreads == null)
+                _storyThreads = new List<StoryThread>();
             // Normalize IDs, remove nulls/blanks/duplicates, repair Facts lists.
-            var seenSeedIds = new HashSet<string>();
-            _storySeeds.RemoveAll(s =>
+            var seenThreadIds = new HashSet<string>();
+            _storyThreads.RemoveAll(s =>
             {
                 if (s == null) return true;
                 s.Id = s.Id?.Trim() ?? "";
-                return s.Id.NullOrEmpty() || !seenSeedIds.Add(s.Id);
+                return s.Id.NullOrEmpty() || !seenThreadIds.Add(s.Id);
             });
-            foreach (var s in _storySeeds)
+            foreach (var s in _storyThreads)
             {
                 // Id is validated above (required — it's the lookup key); Name is cosmetic but
                 // the journal UI calls .ToUpperInvariant() on it unguarded, so a null/blank Name
-                // from a corrupted or hand-edited save would throw when the Seeds tab is opened.
+                // from a corrupted or hand-edited save would throw when the Threads tab is opened.
                 if (s.Name.NullOrEmpty()) s.Name = "(unnamed)";
-                if (s.Facts == null) s.Facts = new List<StorySeedFact>();
+                if (s.Facts == null) s.Facts = new List<StoryThreadFact>();
                 else s.Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty() || f.Text.Trim().Length == 0);
             }
             if (_colonyHistory    == null) _colonyHistory    = "";

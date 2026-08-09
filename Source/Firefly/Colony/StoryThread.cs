@@ -3,7 +3,7 @@ using Verse;
 
 namespace Firefly
 {
-    public class StorySeedFact : IExposable
+    public class StoryThreadFact : IExposable
     {
         public long   Tick;
         public string Text;
@@ -15,12 +15,12 @@ namespace Firefly
         }
     }
 
-    public class StorySeed : IExposable
+    public class StoryThread : IExposable
     {
         public string              Id;
         public string              Name;
         public string              Description;
-        public List<StorySeedFact> Facts = new List<StorySeedFact>();
+        public List<StoryThreadFact> Facts = new List<StoryThreadFact>();
 
         public void ExposeData()
         {
@@ -29,7 +29,7 @@ namespace Firefly
             Scribe_Values.Look(ref Description, "description", "");
             Scribe_Collections.Look(ref Facts,  "facts",       LookMode.Deep);
             if (Scribe.mode == LoadSaveMode.LoadingVars && Facts == null)
-                Facts = new List<StorySeedFact>();
+                Facts = new List<StoryThreadFact>();
         }
     }
 }

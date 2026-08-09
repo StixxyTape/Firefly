@@ -159,6 +159,42 @@ namespace Firefly
             "the world beyond feels present and alive.\n\n" +
             "Keep it to a single flowing account, plain past-tense prose. No lists. 10 lines maximum.";
 
+        private static readonly string ThreadScanSystemPrompt =
+            "You are Fillion, observer of a colony on a distant earth-like rimworld. You will be " +
+            "given story threads the colony is currently dealing with, and a detailed log of what " +
+            "happened today. Your job is to scour through today's log and decide two things from " +
+            "today's events: are any story threads being updated, or are any new story threads " +
+            "being created.\n\n" +
+            "The criteria for threads being updated: anything in today's log which would have an " +
+            "impact on the story thread. This includes notable and impactful changes to relevant " +
+            "characters (death, permanent injury, other notable and impactful changes), factions, " +
+            "quests, and anything else that is involved with the story thread (items, buildings, " +
+            "relationships, events, etc.). This also includes anything that could have future " +
+            "developments or consequences for the story thread.\n\n" +
+            "The criteria for threads being created: anything in today's log which is not " +
+            "relevant/connected to any current story threads, but could lead to larger implications " +
+            "about or expand the world, could have any consequences or lasting impact on the colony " +
+            "or any factions, have a narrative built in (e.g from quests or events), or could lead " +
+            "to narrative arcs about characters or factions.\n\n" +
+            "You can mainly ignore routine events/activities and inconsequential occurrences. Only " +
+            "focus on things that actually have a narrative weight.\n\n" +
+            "It is okay to respond with an empty list of new threads/updates if nothing consequential " +
+            "happens to update or create new threads. If a day seems normal with nothing really out " +
+            "of the ordinary happening, then it is safe to assume no story threads are being " +
+            "progressed or created.\n\n" +
+            "Facts must be short, self-contained statements of what actually happened. When writing " +
+            "a fact, make sure to include the full names of any Characters/Factions/Items/Entities " +
+            "involved.\n\n" +
+            "For both new and updated threads, also write a summary reflecting the thread as it " +
+            "currently stands. An updated thread's summary should carry forward what's still " +
+            "relevant, fold in what changed today, and leave anything unresolved open — don't " +
+            "invent details or present speculation as fact.\n\n" +
+            "Return exactly one JSON object and nothing else, with this shape:\n" +
+            "{\"new_threads\":[{\"name\":\"string\",\"summary\":\"string\",\"facts\":[\"string\"]}]," +
+            "\"updates\":[{\"id\":\"string\",\"summary\":\"string\",\"facts\":[\"string\"]}]}\n" +
+            "Both arrays must always be present, using empty arrays when there is nothing to report. " +
+            "Every update id must exactly match an id from the existing-threads block; never use a name as an id.";
+
         private static string DailySystemPrompt() => SummarySystemPrompt;
 
         public void WriteTimeline(Map map, int day = -1)
@@ -219,6 +255,7 @@ namespace Firefly
                 _ledger.Clear();
 
                 SendSummaryRequest(day, fullContent);
+                SendThreadScanRequest(fullContent);
                 BackfillMissingSummaries(excludeDay: day);
             }
             catch (Exception e)
@@ -253,6 +290,36 @@ namespace Firefly
                     MaybeSendArcSummary();
                 },
                 onError: err => Log.Warning($"[Firefly] LLM summary failed for Day {day}: {err}"));
+        }
+
+        private void SendThreadScanRequest(string content)
+        {
+            if (_ledger == null) return;
+
+            string threadContext = StoryThreadScanIngest.BuildThreadContextBlock(_ledger);
+
+            string prompt =
+                "=== EXISTING STORY THREADS ===\n" +
+                (threadContext.NullOrEmpty() ? "(none)" : threadContext.Trim()) +
+                "\n\n=== TODAY'S COLONY RECORD ===\n" + content;
+
+            Log.Message("[Firefly] Scanning daily record for story threads...");
+            LLMClient.Send(
+                ThreadScanSystemPrompt,
+                prompt,
+                onSuccess: rawJson =>
+                {
+                    if (!IsStillActive) return;
+                    try
+                    {
+                        StoryThreadScanIngest.ApplyScanResult(_ledger, rawJson);
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"[Firefly] Thread scan ingest failed: {e.Message}");
+                    }
+                },
+                onError: err => Log.Warning($"[Firefly] Story thread scan failed: {err}"));
         }
 
         // Only folds in a contiguous run of summarised days starting right after LastArcDay —
