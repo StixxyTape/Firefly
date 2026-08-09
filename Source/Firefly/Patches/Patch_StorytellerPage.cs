@@ -11,8 +11,13 @@ namespace Firefly
     // persisted to the save file from that point on.
     // Reset the toggle to its default each time the storyteller page opens so the choice
     // never leaks across multiple new-game flows within the same session.
-    [HarmonyPatch(typeof(Page_SelectStoryteller), "PostOpen")]
-    public static class Patch_StorytellerPage_PostOpen
+    // PreOpen, not PostOpen — Page_SelectStoryteller only overrides PreOpen itself; PostOpen is
+    // inherited from Window, and Harmony's by-name patch resolution only finds methods actually
+    // declared on the given type, not ones it merely inherits. Patching "PostOpen" here throws
+    // "Undefined target method" at mod load and takes down all of Firefly's patches with it,
+    // since Harmony.PatchAll() aborts on the first patch class that fails to resolve.
+    [HarmonyPatch(typeof(Page_SelectStoryteller), nameof(Page_SelectStoryteller.PreOpen))]
+    public static class Patch_StorytellerPage_PreOpen
     {
         static void Postfix() => Patch_StorytellerPage.FireflyEnabled = true;
     }
