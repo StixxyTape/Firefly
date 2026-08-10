@@ -98,10 +98,14 @@ namespace Firefly
             string category = colonyPending && threadsPending
                 ? "Colony + Threads"
                 : colonyPending ? "Colony" : threadsPending ? "Threads" : "Journal";
+            string bannerText = $"Fillion is writing  ·  {category}";
 
             int frame = Mathf.FloorToInt(Time.realtimeSinceStartup * 4f) % PendingGlyphs.Length;
             float wave = 0.5f + 0.5f * Mathf.Sin(Time.realtimeSinceStartup * 5f);
-            var rect = new Rect(mainRect.xMax - 225f, mainRect.y, 225f, 24f);
+            Text.Font = GameFont.Tiny;
+            float bannerWidth = Mathf.Ceil(Text.CurFontStyle.CalcSize(new GUIContent(bannerText)).x) + 46f;
+            bannerWidth = Mathf.Min(bannerWidth, mainRect.width);
+            var rect = new Rect(mainRect.xMax - bannerWidth, mainRect.y, bannerWidth, 26f);
 
             GUI.color = Color.white;
             Widgets.DrawMenuSection(rect);
@@ -110,13 +114,11 @@ namespace Firefly
             GUI.color = new Color(accent.r, accent.g, accent.b, 0.62f + wave * 0.3f);
             GUI.DrawTexture(new Rect(rect.x + 1f, rect.y + 2f, 3f, rect.height - 4f), BaseContent.WhiteTex);
 
-            Text.Font = GameFont.Tiny;
             Text.Anchor = TextAnchor.MiddleLeft;
             GUI.color = new Color(accent.r, accent.g, accent.b, 0.82f + wave * 0.18f);
             Widgets.Label(new Rect(rect.x + 11f, rect.y, 22f, rect.height), PendingGlyphs[frame]);
             GUI.color = new Color(0.88f, 0.88f, 0.88f);
-            Widgets.Label(new Rect(rect.x + 32f, rect.y, rect.width - 40f, rect.height),
-                $"Fillion is writing  ·  {category}");
+            Widgets.Label(new Rect(rect.x + 32f, rect.y, rect.width - 38f, rect.height), bannerText);
             TooltipHandler.TipRegion(rect, "An LLM response for Firefly is being generated.");
             GUI.color = Color.white;
             Text.Anchor = TextAnchor.UpperLeft;
@@ -208,6 +210,7 @@ namespace Firefly
         private float RootNavRow(float y, float w, float rowH, NavRoot root, string label,
                                  Color accent, System.Action onClick)
         {
+            Text.Font = GameFont.Small;
             var row = new Rect(0f, y, w, rowH);
             bool selected = _activeRoot == root;
             bool pending = root == NavRoot.Colony
@@ -267,7 +270,11 @@ namespace Firefly
         private static float ThreadRowHeight(float w, StoryThread thread, float rowH)
         {
             float labelW = w - 54f;
-            float textH  = Text.CalcHeight(thread.Name, labelW);
+            // Do not measure through Text.CurFontStyle: it is global IMGUI state and may still
+            // carry a font selected by a different control on the previous frame. Pinning both
+            // measurement and rendering to Small keeps wrapping and row geometry identical.
+            var style = Text.fontStyles[(int)GameFont.Small];
+            float textH = style.CalcHeight(new GUIContent(thread.Name ?? ""), labelW);
             return Mathf.Max(rowH, textH + 6f);
         }
 
@@ -310,6 +317,7 @@ namespace Firefly
 
             GUI.color = Color.white;
 
+            Text.Font = GameFont.Small;
             Text.Anchor = TextAnchor.MiddleLeft;
             GUI.color = selected ? Color.white : new Color(0.72f, 0.72f, 0.72f);
             Widgets.Label(new Rect(14f, y, labelW, h), thread.Name);
@@ -339,6 +347,7 @@ namespace Firefly
 
         private float NavRow(float y, float w, float rowH, int id, string label, string badge, Color accent)
         {
+            Text.Font = GameFont.Small;
             var r   = new Rect(0f, y, w, rowH);
             bool sel = _nav == id;
 

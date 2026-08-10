@@ -29,7 +29,8 @@ namespace Firefly
                     if (t.ActionToDo == TradeAction.None || t.CountToTransfer == 0) continue;
 
                     int count = Math.Abs(t.CountToTransfer);
-                    string label = count == 1 ? t.Label : $"{count} {t.Label}";
+                    string cleanLabel = ColonyLedger.StripTags(t.Label);
+                    string label = count == 1 ? cleanLabel : $"{count} {cleanLabel}";
 
                     if (t.ActionToDo == TradeAction.PlayerSells)
                         lost.Add(label);

@@ -104,7 +104,11 @@ namespace Firefly
         // ── Live timeline buffer ──────────────────────────────────────────────
         private bool                             _dayHeaderWritten        = false;
         private readonly HashSet<string>         _trackedPawnIds          = new HashSet<string>();
-        private readonly List<(string Name, string Descriptor)> _trackedPawnLines = new List<(string, string)>();
+        // Keyed by the pawn's stable ThingID (never by displayed name/line — pawns can share
+        // names or be renamed, which made the old name-matching update logic fragile) so a
+        // pawn's category can be found and refreshed later regardless of what changed about them.
+        private readonly List<(string Id, string Line, string Descriptor)> _trackedPawnLines =
+            new List<(string, string, string)>();
         private readonly StringBuilder           _timelineBuffer          = new StringBuilder();
         private readonly HashSet<int>            _mentionedQuestIds       = new HashSet<int>();
         private readonly Dictionary<string, long> _lastFactionCombatTick  = new Dictionary<string, long>();
@@ -1071,7 +1075,7 @@ namespace Firefly
             var battles   = saving ? _announcedBattleOrder.ToList() : null;
             var hazards   = saving ? _announcedHazards.Select(h => $"{h.Item1}{FieldSep}{h.Item2}").ToList() : null;
             var pawnIds      = saving ? _trackedPawnIds.ToList() : null;
-            var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Name}{FieldSep}{p.Descriptor}").ToList() : null;
+            var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Id}{FieldSep}{p.Line}{FieldSep}{p.Descriptor}").ToList() : null;
             var questIds     = saving ? _mentionedQuestIds.ToList() : null;
             string timelineSnapshot = saving ? _timelineBuffer.ToString() : null;
             List<string> drainedCombat  = saving ? _drainedCombatLines.Select(e  => $"{e.Tick}{FieldSep}{e.Text}").ToList()  : null;
@@ -1167,7 +1171,11 @@ namespace Firefly
                 foreach (var l in pawnLines)
                 {
                     var p = l.Split(FieldSep);
-                    if (p.Length == 2) _trackedPawnLines.Add((p[0], p[1]));
+                    if (p.Length == 3) _trackedPawnLines.Add((p[0], p[1], p[2]));
+                    // Pre-fix save format (no stable id stored yet) — keep visible with an empty
+                    // id rather than dropping it; it just won't benefit from id-based refreshing
+                    // until this specific pawn is naturally re-encountered and re-added.
+                    else if (p.Length == 2) _trackedPawnLines.Add(("", p[0], p[1]));
                 }
 
             DecodePendingEvents(pending);
@@ -1380,12 +1388,27 @@ namespace Firefly
             if (!_initialized || !_enabled || pawn == null) return "";
             string id = pawn.ThingID;
             if (id.NullOrEmpty()) return "";
+
+            string category = GetPawnDescriptor(pawn);
             bool isNew;
             lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
-            if (!isNew) return "";
-            string category = GetPawnDescriptor(pawn);
-            string line     = BuildRosterLine(pawn);
-            lock (_trackedPawnLines) { _trackedPawnLines.Add((line, category)); }
+
+            if (!isNew)
+            {
+                // Already introduced before — a pawn's category can change since then (recruited,
+                // manumitted, captured, freed, etc.), so refresh the stored entry silently rather
+                // than never touching it again. No repeated inline annotation for an old pawn.
+                lock (_trackedPawnLines)
+                {
+                    int idx = _trackedPawnLines.FindIndex(p => p.Id == id);
+                    if (idx >= 0 && _trackedPawnLines[idx].Descriptor != category)
+                        _trackedPawnLines[idx] = (id, _trackedPawnLines[idx].Line, category);
+                }
+                return "";
+            }
+
+            string line = BuildRosterLine(pawn);
+            lock (_trackedPawnLines) { _trackedPawnLines.Add((id, line, category)); }
             return $" ({category})";
         }
 
@@ -1408,12 +1431,13 @@ namespace Firefly
             lock (_trackedPawnLines)
             {
                 // If the pawn was already introduced (e.g. via battle events before the letter),
-                // replace their existing entry with the leader-labelled version.
-                int idx = _trackedPawnLines.FindIndex(p => p.Name == baseLine || p.Name.StartsWith(baseLine + " —"));
+                // replace their existing entry with the leader-labelled version. Matched by their
+                // stable id, not by the old line's text — two pawns can share a displayed name.
+                int idx = _trackedPawnLines.FindIndex(p => p.Id == id);
                 if (idx >= 0)
-                    _trackedPawnLines[idx] = (newLine, category);
+                    _trackedPawnLines[idx] = (id, newLine, category);
                 else
-                    _trackedPawnLines.Add((newLine, category));
+                    _trackedPawnLines.Add((id, newLine, category));
             }
         }
 
@@ -1480,6 +1504,29 @@ namespace Firefly
             catch { }
         }
 
+        // Daily roster maintenance for common pawn-status transitions such as prisoner
+        // recruitment and slave manumission. IntroduceTag is idempotent for known pawns: it
+        // silently refreshes their stored category without emitting another inline introduction.
+        public void RefreshTrackedPawnCategories(Map map)
+        {
+            if (!_initialized || map?.mapPawns == null) return;
+            try
+            {
+                var colonists = map.mapPawns.FreeColonistsSpawned;
+                if (colonists != null)
+                    foreach (var p in colonists) IntroduceTag(p);
+
+                var prisoners = map.mapPawns.PrisonersOfColonySpawned;
+                if (prisoners != null)
+                    foreach (var p in prisoners) IntroduceTag(p);
+
+                var slaves = map.mapPawns.SlavesOfColonySpawned;
+                if (slaves != null)
+                    foreach (var p in slaves) IntroduceTag(p);
+            }
+            catch { }
+        }
+
         public string BuildPawnRosterSection()
         {
             lock (_trackedPawnLines)
@@ -1494,7 +1541,7 @@ namespace Firefly
                 foreach (var group in groups)
                 {
                     sb.AppendLine(RosterCategoryHeader(group.Key) + ":");
-                    foreach (var (line, _) in group)
+                    foreach (var (_, line, _) in group)
                         sb.AppendLine($"  - {line}");
                 }
                 return sb.ToString();
