@@ -444,13 +444,15 @@ namespace Firefly
                         return;
                     }
 
-                    // A cheap repair attempt before paying for a full retry of the expensive scan
-                    // call — skipped for an empty response, since there's nothing to repair.
-                    if (!rawJson.NullOrEmpty())
-                    {
-                        SendThreadScanRepairRequest(content, day, rawJson, attempt);
-                        return;
-                    }
+                    // LLM repair call temporarily disabled — testing whether the deterministic
+                    // bracket-repair alone (TryAutoCloseBrackets, runs automatically inside
+                    // StoryThreadScanIngest.TryParse before this point is ever reached) is enough
+                    // on its own. Re-enable by uncommenting below if that turns out insufficient.
+                    // if (attempt == 1 && !rawJson.NullOrEmpty())
+                    // {
+                    //     SendThreadScanRepairRequest(content, day, rawJson, attempt);
+                    //     return;
+                    // }
 
                     RetryOrGiveUp(content, day, attempt);
                 },

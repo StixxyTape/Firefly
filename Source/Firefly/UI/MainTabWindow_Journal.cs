@@ -270,11 +270,12 @@ namespace Firefly
         private static float ThreadRowHeight(float w, StoryThread thread, float rowH)
         {
             float labelW = w - 54f;
-            // Do not measure through Text.CurFontStyle: it is global IMGUI state and may still
-            // carry a font selected by a different control on the previous frame. Pinning both
-            // measurement and rendering to Small keeps wrapping and row geometry identical.
-            var style = Text.fontStyles[(int)GameFont.Small];
-            float textH = style.CalcHeight(new GUIContent(thread.Name ?? ""), labelW);
+            // Text.fontStyles itself does not have wrapping enabled; Widgets.Label renders via
+            // Text.CurFontStyle, which does. Measuring the raw style therefore always returned a
+            // single-line height even when the visible label wrapped across several lines.
+            Text.Font = GameFont.Small;
+            Text.WordWrap = true;
+            float textH = Text.CalcHeight(thread.Name ?? "", labelW);
             return Mathf.Max(rowH, textH + 6f);
         }
 
@@ -318,6 +319,7 @@ namespace Firefly
             GUI.color = Color.white;
 
             Text.Font = GameFont.Small;
+            Text.WordWrap = true;
             Text.Anchor = TextAnchor.MiddleLeft;
             GUI.color = selected ? Color.white : new Color(0.72f, 0.72f, 0.72f);
             Widgets.Label(new Rect(14f, y, labelW, h), thread.Name);
