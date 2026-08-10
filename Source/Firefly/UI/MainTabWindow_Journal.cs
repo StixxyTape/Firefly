@@ -19,25 +19,23 @@ namespace Firefly
         private const float Pad   = 5f;
         private const float TabH  = 22f;
 
-        // Section accent colours
+        private enum NavRoot { Colony, Threads }
+
+        // Semantic accents: journal, resolved prose, danger, and ongoing threads.
+        private static readonly Color AcJournal = new Color(0.58f, 0.73f, 0.86f);
         private static readonly Color AcSummary = new Color(0.35f, 0.78f, 0.48f);
-        private static readonly Color AcEvents  = new Color(0.58f, 0.73f, 0.86f);
-        private static readonly Color AcStatus  = new Color(0.52f, 0.62f, 0.84f);
-        private static readonly Color AcCombat  = new Color(0.84f, 0.38f, 0.28f);
-        private static readonly Color AcHazards = new Color(0.84f, 0.62f, 0.22f);
-        private static readonly Color AcHistory = new Color(0.92f, 0.78f, 0.38f);
-        private static readonly Color AcToday   = new Color(1.00f, 0.88f, 0.28f);
-        private static readonly Color AcQuests  = new Color(0.68f, 0.48f, 0.88f);
-        private static readonly Color AcThreads   = new Color(0.88f, 0.52f, 0.72f);
+        private static readonly Color AcWarning = new Color(0.88f, 0.48f, 0.28f);
+        private static readonly Color AcThreads = new Color(0.88f, 0.52f, 0.72f);
+        private static readonly string[] PendingGlyphs = { "◐", "◓", "◑", "◒" };
 
         private int    _nav     = NavToday;
         private string _section = "EVENTS";
+        private NavRoot _activeRoot = NavRoot.Colony;
 
         private readonly Dictionary<int, string>    _navSectionMemory = new Dictionary<int, string>();
         private readonly Dictionary<string, Vector2> _scrolls         = new Dictionary<string, Vector2>();
         private Vector2 _navScroll      = Vector2.zero;
         private string  _selectedThreadId = null;
-        private Vector2 _threadListScroll = Vector2.zero;
 
         public override Vector2 RequestedTabSize => new Vector2(1000f, 430f);
 
@@ -55,13 +53,23 @@ namespace Firefly
             if (!hasToday && past.Count == 0 && ledger.ColonyHistory.NullOrEmpty() && ledger.StoryThreads.Count == 0)
             {
                 Widgets.Label(inRect.ContractedBy(Pad),
-                    "No journal entries yet.\n\nThe journal will begin recording at the start of the next in-game day.");
+                    "I have not begun this colony's chronicle yet.\n\nGive the day time to unfold, and I will remember it. — Fillion");
                 return;
             }
 
-            // Clamp nav to valid target
-            if (_nav == NavToday && !hasToday)
-                _nav = past.Count > 0 ? past.Max(d => d.Day) : NavColony;
+            // Keep content selection valid within the active top-level section.
+            if (_activeRoot == NavRoot.Colony)
+            {
+                bool validDay = _nav >= 0 && past.Any(d => d.Day == _nav);
+                if (_nav == NavThreads || (_nav == NavToday && !hasToday) || (_nav >= 0 && !validDay))
+                    SelectColonyDefault(hasToday, today, past);
+            }
+            else
+            {
+                _nav = NavThreads;
+                if (ledger.StoryThreads.All(t => t.Id != _selectedThreadId))
+                    _selectedThreadId = ledger.StoryThreads.FirstOrDefault()?.Id;
+            }
 
             // Layout
             var navRect  = new Rect(inRect.x,        inRect.y, NavW,                       inRect.height);
@@ -73,47 +81,260 @@ namespace Firefly
             GUI.DrawTexture(divLine, BaseContent.WhiteTex);
             GUI.color = Color.white;
 
-            DrawNav(navRect, hasToday, today, past);
+            DrawNav(navRect, hasToday, today, past, ledger.StoryThreads);
             DrawMain(mainRect, ledger, hasToday, today, past);
+            DrawPendingIndicator(mainRect);
+        }
+
+        private static void DrawPendingIndicator(Rect mainRect)
+        {
+            if (!LLMClient.IsPending) return;
+
+            bool colonyPending = LLMClient.IsPendingForAny(JournalRecorder.ColonyPendingLabels);
+            bool threadsPending = LLMClient.IsPendingForAny(JournalRecorder.ThreadsPendingLabels);
+            Color accent = colonyPending && threadsPending
+                ? Color.Lerp(AcJournal, AcThreads, 0.5f)
+                : colonyPending ? AcJournal : threadsPending ? AcThreads : AcSummary;
+            string category = colonyPending && threadsPending
+                ? "Colony + Threads"
+                : colonyPending ? "Colony" : threadsPending ? "Threads" : "Journal";
+
+            int frame = Mathf.FloorToInt(Time.realtimeSinceStartup * 4f) % PendingGlyphs.Length;
+            float wave = 0.5f + 0.5f * Mathf.Sin(Time.realtimeSinceStartup * 5f);
+            var rect = new Rect(mainRect.xMax - 225f, mainRect.y, 225f, 24f);
+
+            GUI.color = Color.white;
+            Widgets.DrawMenuSection(rect);
+            GUI.color = new Color(accent.r, accent.g, accent.b, 0.07f);
+            GUI.DrawTexture(rect.ContractedBy(1f), BaseContent.WhiteTex);
+            GUI.color = new Color(accent.r, accent.g, accent.b, 0.62f + wave * 0.3f);
+            GUI.DrawTexture(new Rect(rect.x + 1f, rect.y + 2f, 3f, rect.height - 4f), BaseContent.WhiteTex);
+
+            Text.Font = GameFont.Tiny;
+            Text.Anchor = TextAnchor.MiddleLeft;
+            GUI.color = new Color(accent.r, accent.g, accent.b, 0.82f + wave * 0.18f);
+            Widgets.Label(new Rect(rect.x + 11f, rect.y, 22f, rect.height), PendingGlyphs[frame]);
+            GUI.color = new Color(0.88f, 0.88f, 0.88f);
+            Widgets.Label(new Rect(rect.x + 32f, rect.y, rect.width - 40f, rect.height),
+                $"Fillion is writing  ·  {category}");
+            TooltipHandler.TipRegion(rect, "An LLM response for Firefly is being generated.");
+            GUI.color = Color.white;
+            Text.Anchor = TextAnchor.UpperLeft;
+            Text.Font = GameFont.Small;
         }
 
         // ── Navigation panel ──────────────────────────────────────────────────
 
-        private void DrawNav(Rect rect, bool hasToday, int today, IReadOnlyList<DailyRecord> past)
+        private void DrawNav(Rect rect, bool hasToday, int today, IReadOnlyList<DailyRecord> past,
+                             IReadOnlyList<StoryThread> threads)
         {
             const float rowH = 26f;
-            int rows = (hasToday ? 1 : 0) + 2 + (past.Count > 0 ? past.Count + 1 : 0);
-            var view = new Rect(0f, 0f, rect.width - 16f, Mathf.Max(rows * rowH, rect.height));
+            float viewWidth = rect.width - 16f;
+
+            // Computed once and reused for both the scroll content size below and the actual
+            // per-row draw/hit-test in the loop further down — calling Text.CalcHeight separately
+            // in two places let the two disagree (rows drawn at one height, hitboxes at another,
+            // drifting further out of sync each row down the list).
+            // Not gated on _activeRoot: a root-row click below can flip _activeRoot to Threads
+            // mid-frame, and the render loop further down re-checks _activeRoot fresh — gating this
+            // list on the pre-click value left it null on exactly the frame that needed it.
+            List<float> threadHeights = threads.Count > 0
+                ? threads.Select(t => ThreadRowHeight(viewWidth, t, rowH)).ToList()
+                : null;
+
+            float childH = _activeRoot == NavRoot.Colony
+                ? (1 + (hasToday ? 1 : 0) + past.Count) * rowH
+                : threadHeights != null
+                    ? threadHeights.Sum()
+                    : rowH;
+            float headerH = 3 * rowH;
+            var view = new Rect(0f, 0f, viewWidth, Mathf.Max(headerH + childH, rect.height));
             Widgets.BeginScrollView(rect, ref _navScroll, view);
 
             float y = 0f;
-            y = NavRow(y, view.width, rowH, NavColony, "Colony", "◆", AcHistory);
-            y = NavRow(y, view.width, rowH, NavThreads,  "Threads",  "◆", AcThreads);
+            y = RootNavRow(y, view.width, rowH, NavRoot.Colony, "Colony", AcJournal,
+                () =>
+                {
+                    _activeRoot = NavRoot.Colony;
+                    SelectColonyDefault(hasToday, today, past);
+                });
+            y = RootNavRow(y, view.width, rowH, NavRoot.Threads, "Threads", AcThreads,
+                () =>
+                {
+                    _activeRoot = NavRoot.Threads;
+                    _nav = NavThreads;
+                    _selectedThreadId = threads.FirstOrDefault()?.Id;
+                    _section = _navSectionMemory.TryGetValue(NavThreads, out string memory) ? memory : "SUMMARY";
+                });
+            y = NavDivider(y, view.width, rowH);
 
-            if (hasToday || past.Count > 0)
+            if (_activeRoot == NavRoot.Colony)
             {
-                GUI.color = new Color(1f, 1f, 1f, 0.09f);
-                GUI.DrawTexture(new Rect(6f, y + rowH * 0.45f, view.width - 12f, 1f), BaseContent.WhiteTex);
-                GUI.color = Color.white;
-                y += rowH * 0.8f;
-            }
+                y = NavRow(y, view.width, rowH, NavColony, "History", "◆", AcJournal);
 
-            if (hasToday)
-                y = NavRow(y, view.width, rowH, NavToday, $"Day {today}", "●", AcToday);
+                if (hasToday)
+                    y = NavRow(y, view.width, rowH, NavToday, $"Day {today}", "●", AcJournal);
 
-            if (past.Count > 0)
-            {
                 foreach (var rec in past.OrderByDescending(d => d.Day))
                 {
                     bool hasSummary = !rec.Summary.NullOrEmpty();
                     y = NavRow(y, view.width, rowH, rec.Day,
                         $"Day {rec.Day}",
                         hasSummary ? "✓" : "·",
-                        hasSummary ? new Color(0.4f, 0.92f, 0.4f) : Color.gray);
+                        hasSummary ? AcSummary : Color.gray);
                 }
+            }
+            else if (threads.Count > 0)
+            {
+                for (int i = 0; i < threads.Count; i++)
+                    y = ThreadNavRow(y, view.width, threads[i], threadHeights[i]);
+            }
+            else
+            {
+                y = NavRow(y, view.width, rowH, NavThreads, "No threads yet", "·", AcThreads);
             }
 
             Widgets.EndScrollView();
+        }
+
+        private void SelectColonyDefault(bool hasToday, int today, IReadOnlyList<DailyRecord> past)
+        {
+            _nav = hasToday ? NavToday : past.Count > 0 ? past.Max(d => d.Day) : NavColony;
+            _section = _navSectionMemory.TryGetValue(_nav, out string memory)
+                ? memory
+                : DefaultSection(_nav);
+        }
+
+        private float RootNavRow(float y, float w, float rowH, NavRoot root, string label,
+                                 Color accent, System.Action onClick)
+        {
+            var row = new Rect(0f, y, w, rowH);
+            bool selected = _activeRoot == root;
+            bool pending = root == NavRoot.Colony
+                ? LLMClient.IsPendingForAny(JournalRecorder.ColonyPendingLabels)
+                : LLMClient.IsPendingForAny(JournalRecorder.ThreadsPendingLabels);
+
+            if (selected)
+            {
+                GUI.color = new Color(accent.r, accent.g, accent.b, 0.14f);
+                GUI.DrawTexture(row, BaseContent.WhiteTex);
+                GUI.color = accent;
+                GUI.DrawTexture(new Rect(0f, y + 2f, 3f, rowH - 4f), BaseContent.WhiteTex);
+            }
+            else if (Mouse.IsOver(row))
+                Widgets.DrawHighlight(row);
+
+            if (pending)
+            {
+                float wave = 0.5f + 0.5f * Mathf.Sin(Time.realtimeSinceStartup * 5f);
+                GUI.color = new Color(accent.r, accent.g, accent.b, 0.42f + wave * 0.5f);
+                const float edge = 1.5f;
+                GUI.DrawTexture(new Rect(row.x, row.y, row.width, edge), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(row.x, row.yMax - edge, row.width, edge), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(row.x, row.y, edge, row.height), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(row.xMax - edge, row.y, edge, row.height), BaseContent.WhiteTex);
+            }
+
+            Text.Anchor = TextAnchor.MiddleLeft;
+            GUI.color = selected ? Color.white : new Color(0.65f, 0.65f, 0.65f);
+            Widgets.Label(new Rect(9f, y, w - 40f, rowH), label);
+            Text.Anchor = TextAnchor.MiddleRight;
+            GUI.color = accent;
+            string badge = pending
+                ? PendingGlyphs[Mathf.FloorToInt(Time.realtimeSinceStartup * 4f) % PendingGlyphs.Length]
+                : selected ? "▼" : "▶";
+            var badgeRect = new Rect(w - 28f, y, 24f, rowH);
+            Widgets.Label(badgeRect, badge);
+            if (pending)
+                TooltipHandler.TipRegion(badgeRect, $"Fillion is writing in {label}.");
+            GUI.color = Color.white;
+            Text.Anchor = TextAnchor.UpperLeft;
+
+            if (Widgets.ButtonInvisible(row)) onClick();
+            return y + rowH;
+        }
+
+        private static float NavDivider(float y, float width, float rowH)
+        {
+            GUI.color = new Color(1f, 1f, 1f, 0.09f);
+            GUI.DrawTexture(new Rect(6f, y + rowH * 0.45f, width - 12f, 1f), BaseContent.WhiteTex);
+            GUI.color = Color.white;
+            return y + rowH * 0.8f;
+        }
+
+        // Long thread names wrap rather than clip — the row grows to fit instead of squashing
+        // wrapped lines into a fixed single-line height.
+        private static float ThreadRowHeight(float w, StoryThread thread, float rowH)
+        {
+            float labelW = w - 54f;
+            float textH  = Text.CalcHeight(thread.Name, labelW);
+            return Mathf.Max(rowH, textH + 6f);
+        }
+
+        private float ThreadNavRow(float y, float w, StoryThread thread, float h)
+        {
+            float labelW = w - 54f;
+
+            var r = new Rect(0f, y, w, h);
+            bool selected = _nav == NavThreads && _selectedThreadId == thread.Id;
+            bool working = JournalRecorder.IsThreadWorking(thread.Id);
+            long now = Find.TickManager?.TicksAbs ?? 0L;
+            bool updatedToday = thread.LastTouchedTick > 0L && now >= thread.LastTouchedTick
+                && now - thread.LastTouchedTick < GenDate.TicksPerDay;
+
+            if (selected)
+            {
+                GUI.color = new Color(1f, 1f, 1f, 0.09f);
+                GUI.DrawTexture(r, BaseContent.WhiteTex);
+                GUI.color = AcThreads;
+                GUI.DrawTexture(new Rect(0f, y + 3f, 3f, h - 6f), BaseContent.WhiteTex);
+            }
+            else if (Mouse.IsOver(r))
+                Widgets.DrawHighlight(r);
+            else
+            {
+                GUI.color = new Color(AcThreads.r, AcThreads.g, AcThreads.b, 0.035f);
+                GUI.DrawTexture(r, BaseContent.WhiteTex);
+            }
+
+            if (working)
+            {
+                float wave = 0.5f + 0.5f * Mathf.Sin(Time.realtimeSinceStartup * 5f);
+                GUI.color = new Color(AcThreads.r, AcThreads.g, AcThreads.b, 0.42f + wave * 0.5f);
+                const float edge = 1.5f;
+                GUI.DrawTexture(new Rect(r.x, r.y, r.width, edge), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(r.x, r.yMax - edge, r.width, edge), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(r.x, r.y, edge, r.height), BaseContent.WhiteTex);
+                GUI.DrawTexture(new Rect(r.xMax - edge, r.y, edge, r.height), BaseContent.WhiteTex);
+            }
+
+            GUI.color = Color.white;
+
+            Text.Anchor = TextAnchor.MiddleLeft;
+            GUI.color = selected ? Color.white : new Color(0.72f, 0.72f, 0.72f);
+            Widgets.Label(new Rect(14f, y, labelW, h), thread.Name);
+
+            Text.Anchor = TextAnchor.MiddleRight;
+            GUI.color = AcThreads;
+            var badgeRect = new Rect(w - 39f, y, 36f, h);
+            string badge = working
+                ? PendingGlyphs[Mathf.FloorToInt(Time.realtimeSinceStartup * 4f) % PendingGlyphs.Length]
+                : updatedToday ? "NEW" : "◇";
+            Widgets.Label(badgeRect, badge);
+            if (working)
+                TooltipHandler.TipRegion(badgeRect, "Fillion is writing this story thread.");
+            else if (updatedToday)
+                TooltipHandler.TipRegion(badgeRect, "This story thread changed today.");
+            GUI.color = Color.white;
+            Text.Anchor = TextAnchor.UpperLeft;
+
+            if (Widgets.ButtonInvisible(r))
+            {
+                _nav = NavThreads;
+                _selectedThreadId = thread.Id;
+                _section = _navSectionMemory.TryGetValue(NavThreads, out string memory) ? memory : "SUMMARY";
+            }
+            return y + h;
         }
 
         private float NavRow(float y, float w, float rowH, int id, string label, string badge, Color accent)
@@ -189,13 +410,13 @@ namespace Firefly
 
             var secs = new List<(string Name, Color Ac, string Text)>
             {
-                ("EVENTS", AcEvents, eventsContent),
+                ("EVENTS", AcJournal, eventsContent),
             };
-            if (!combatContent.NullOrEmpty())       secs.Add(("COMBAT",  AcCombat,  combatContent));
-            if (!hazardContent.NullOrEmpty())       secs.Add(("HAZARDS", AcHazards, hazardContent));
-            if (!todayQuestContent.NullOrEmpty())   secs.Add(("QUESTS",  AcQuests,  todayQuestContent));
+            if (!combatContent.NullOrEmpty())       secs.Add(("COMBAT",  AcWarning, combatContent));
+            if (!hazardContent.NullOrEmpty())       secs.Add(("HAZARDS", AcWarning, hazardContent));
+            if (!todayQuestContent.NullOrEmpty())   secs.Add(("QUESTS",  AcJournal, todayQuestContent));
 
-            DrawSectioned(rect, secs, $"today{day}", AcToday, $"DAY {day}  —  IN PROGRESS");
+            DrawSectioned(rect, secs, $"today{day}", AcJournal, $"DAY {day}  —  IN PROGRESS");
         }
 
         // ── Colony history view ───────────────────────────────────────────────
@@ -205,133 +426,70 @@ namespace Firefly
             string history = ledger.ColonyHistory;
             var secs = new List<(string, Color, string)>
             {
-                ("COLONY HISTORY", AcHistory, history.NullOrEmpty()
-                    ? "(Colony history will appear here after the first arc summary, every 15 days.)"
+                ("COLONY HISTORY", AcJournal, history.NullOrEmpty()
+                    ? "I am still gathering the shape of this colony's story. In time, its history will find its voice. — Fillion"
                     : history),
             };
-            DrawSectioned(rect, secs, "colony", AcHistory, "COLONY HISTORY");
+            DrawSectioned(rect, secs, "colony", AcJournal, "COLONY HISTORY");
         }
 
-        // ── Story threads view ──────────────────────────────────────────────────
+        // ── Story thread view ─────────────────────────────────────────────────
 
         private void DrawThreads(Rect rect, ColonyLedger ledger)
         {
-            var threads = ledger.StoryThreads;
-
-            // Shared header
-            float y   = rect.y;
-            GUI.color = AcThreads;
-            Text.Font = GameFont.Tiny;
-            Widgets.Label(new Rect(rect.x, y, rect.width, 20f), "STORY THREADS");
-            Text.Font = GameFont.Small;
-            y += 22f;
-            GUI.color = new Color(AcThreads.r, AcThreads.g, AcThreads.b, 0.35f);
-            GUI.DrawTexture(new Rect(rect.x, y, rect.width, 1f), BaseContent.WhiteTex);
-            GUI.color = Color.white;
-            y += 1f + Pad;
-
-            if (threads.Count == 0)
+            var selected = ledger.StoryThreads.FirstOrDefault(t => t.Id == _selectedThreadId);
+            if (selected == null)
             {
-                GUI.color = new Color(0.55f, 0.55f, 0.55f);
-                Widgets.Label(new Rect(rect.x, y, rect.width, rect.yMax - y),
-                    "(No story threads yet. They will appear here as the narrative develops.)");
-                GUI.color = Color.white;
+                var secs = new List<(string, Color, string)>
+                {
+                    ("THREADS", AcThreads,
+                        "No threads have taken root yet. When something in this colony's story feels " +
+                        "larger than a single day, I will begin one here. — Fillion"),
+                };
+                DrawSectioned(rect, secs, "threads_empty", AcThreads, "STORY THREADS");
                 return;
             }
 
-            // Clamp selected thread to a valid ID
-            if (_selectedThreadId == null || threads.All(s => s.Id != _selectedThreadId))
-                _selectedThreadId = threads[0].Id;
+            // Day comes straight from the colony's own day counter (same numbering as
+            // DailyRecord.Day / the daily timeline), set on the fact when it was recorded — not
+            // reconstructed from Tick. Tick is an absolute-calendar tick (RimWorld.GenDate's
+            // year-5500 epoch), so deriving "day" from it drifted from the colony's actual day
+            // count for any colony that didn't start on day 1 of the in-game year.
+            var facts = new StringBuilder();
+            foreach (var fact in selected.Facts.Where(f => f != null).OrderBy(f => f.Tick))
+                facts.AppendLine($"  - [Day {fact.Day}] {fact.Text}");
 
-            // Split: vertical thread list on the left, detail pane on the right
-            var listRect   = new Rect(rect.x, y, NavW, rect.yMax - y);
-            var divRect    = new Rect(rect.x + NavW, y, 1f, rect.yMax - y);
-            var detailRect = new Rect(rect.x + NavW + 1f + Pad, y,
-                                      rect.width - NavW - 1f - Pad, rect.yMax - y);
-
-            GUI.color = new Color(1f, 1f, 1f, 0.12f);
-            GUI.DrawTexture(divRect, BaseContent.WhiteTex);
-            GUI.color = Color.white;
-
-            // ── Thread list ────────────────────────────────────────────────────
-            const float rowH     = 26f;
-            var         listView = new Rect(0f, 0f, listRect.width - 16f,
-                                            Mathf.Max(threads.Count * rowH, listRect.height));
-            Widgets.BeginScrollView(listRect, ref _threadListScroll, listView);
-            float ry = 0f;
-            foreach (var thread in threads)
+            var sections = new List<(string Name, Color Ac, string Text)>
             {
-                bool sel = _selectedThreadId == thread.Id;
-                var  row = new Rect(0f, ry, listView.width, rowH);
+                ("SUMMARY", AcSummary, selected.Description),
+                ("FACTS", AcThreads, facts.ToString().TrimEnd()),
+            };
 
-                if (sel)
-                {
-                    GUI.color = new Color(1f, 1f, 1f, 0.09f);
-                    GUI.DrawTexture(row, BaseContent.WhiteTex);
-                    GUI.color = AcThreads;
-                    GUI.DrawTexture(new Rect(0f, ry + 3f, 3f, rowH - 6f), BaseContent.WhiteTex);
-                }
-                else if (Mouse.IsOver(row))
-                    Widgets.DrawHighlight(row);
-                GUI.color = Color.white;
-
-                Text.Anchor = TextAnchor.MiddleLeft;
-                GUI.color   = sel ? Color.white : new Color(0.72f, 0.72f, 0.72f);
-                Widgets.Label(new Rect(9f, ry, listView.width - 9f, rowH), thread.Name);
-                GUI.color   = Color.white;
-                Text.Anchor = TextAnchor.UpperLeft;
-
-                if (Widgets.ButtonInvisible(row))
-                    _selectedThreadId = thread.Id;
-
-                ry += rowH;
-            }
-            Widgets.EndScrollView();
-
-            // ── Detail pane ──────────────────────────────────────────────────
-            var selected = threads.FirstOrDefault(s => s.Id == _selectedThreadId);
-            if (selected == null) return;
-
-            float dy = detailRect.y;
-
-            // Thread name sub-header
-            GUI.color = AcThreads;
-            Text.Font = GameFont.Tiny;
-            Widgets.Label(new Rect(detailRect.x, dy, detailRect.width, 20f), selected.Name.ToUpperInvariant());
-            Text.Font = GameFont.Small;
-            dy += 20f + 2f;
-            GUI.color = new Color(AcThreads.r, AcThreads.g, AcThreads.b, 0.35f);
-            GUI.DrawTexture(new Rect(detailRect.x, dy, detailRect.width, 1f), BaseContent.WhiteTex);
-            GUI.color = Color.white;
-            dy += 1f + Pad;
-
-            // Build content
-            float lon             = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
-            long  lonOffsetTicks  = (long)(lon / 15f * GenDate.TicksPerHour);
-            var   sb              = new StringBuilder();
-
-            if (!selected.Description.NullOrEmpty())
-                sb.AppendLine(selected.Description.Trim());
-
-            if (selected.Facts.Count > 0)
+            // Chunks are deliberately hidden from normal play — they're internal source material
+            // for the summarizer, not part of the player-facing record the FACTS tab shows. Dev
+            // mode only, same gating as the LLM IN/OUT debug sections on a day's own view.
+            if (Prefs.DevMode)
             {
-                if (sb.Length > 0) sb.AppendLine();
-                sb.AppendLine("Facts:");
-                foreach (var f in selected.Facts.Where(f => f != null).OrderBy(f => f.Tick))
+                var chunks = new StringBuilder();
+                if (selected.Chunks.Count == 0)
                 {
-                    long localTick = f.Tick + lonOffsetTicks;
-                    int  day = (int)(localTick / GenDate.TicksPerDay);
-                    int  hr  = (int)((localTick % GenDate.TicksPerDay) / GenDate.TicksPerHour);
-                    int  min = (int)((localTick % GenDate.TicksPerHour) * 60 / GenDate.TicksPerHour);
-                    sb.AppendLine($"  - [Day {day}, {hr:D2}:{min:D2}] {f.Text}");
+                    chunks.AppendLine("(none yet)");
                 }
+                else
+                {
+                    foreach (var chunk in selected.Chunks)
+                    {
+                        chunks.AppendLine($"[Day {chunk.StartDay}-{chunk.EndDay}] {chunk.Summary}");
+                        chunks.AppendLine();
+                    }
+                }
+                chunks.AppendLine($"Unchunked facts: {selected.Facts.Count - selected.ChunkedThroughFactIndex} " +
+                                   $"(of {selected.Facts.Count} total, chunked through index {selected.ChunkedThroughFactIndex})");
+                sections.Add(("CHUNKS", AcThreads, chunks.ToString().TrimEnd()));
             }
 
-            string scrollKey   = $"thread_{selected.Id}";
-            _scrolls.TryGetValue(scrollKey, out Vector2 scroll);
-            var contentRect = new Rect(detailRect.x, dy, detailRect.width, detailRect.yMax - dy);
-            DrawTextBox(contentRect, sb.ToString().TrimEnd(), AcThreads, ref scroll, scrollKey);
-            _scrolls[scrollKey] = scroll;
+            DrawSectioned(rect, sections, $"thread_{selected.Id}", AcThreads,
+                selected.Name.ToUpperInvariant());
         }
 
         // ── Past day view ─────────────────────────────────────────────────────
@@ -353,6 +511,7 @@ namespace Firefly
             if (parsed.TryGetValue("COLONIST HEALTH",        out string h)  && !h.NullOrEmpty())   statusParts.Add(h.Trim());
             if (parsed.TryGetValue("PRISONER/SLAVE HEALTH",  out string ph) && !ph.NullOrEmpty())  statusParts.Add(ph.Trim());
             if (parsed.TryGetValue("RELATIONSHIP CHANGES",   out string r)  && !r.NullOrEmpty())   statusParts.Add(r.Trim());
+            if (parsed.TryGetValue("FACTION RELATIONS",      out string fr) && !fr.NullOrEmpty())  statusParts.Add(fr.Trim());
             if (parsed.TryGetValue("SKILL CHANGES",          out string sk) && !sk.NullOrEmpty())  statusParts.Add(sk.Trim());
             string statusContent = string.Join("\n\n", statusParts);
 
@@ -362,25 +521,34 @@ namespace Firefly
             bool hasSummary = !record.Summary.NullOrEmpty();
             string summaryText = hasSummary
                 ? record.Summary
-                : "(Summary pending — LLM request in progress)";
+                : PendingSummaryText();
 
             var secs = new List<(string Name, Color Ac, string Text)>
             {
                 ("SUMMARY", hasSummary ? AcSummary : Color.gray, summaryText),
-                ("EVENTS",  AcEvents,  eventsContent),
+                ("EVENTS",  AcJournal, eventsContent),
             };
-            if (!statusContent.NullOrEmpty())            secs.Add(("STATUS",  AcStatus,  statusContent));
-            if (!combatContent.NullOrEmpty())            secs.Add(("COMBAT",  AcCombat,  combatContent));
-            if (!hazardContent.NullOrEmpty())            secs.Add(("HAZARDS", AcHazards, hazardContent));
-            if (!record.QuestSnapshot.NullOrEmpty())     secs.Add(("QUESTS",  AcQuests,  record.QuestSnapshot));
-            string prevSummary = past.FirstOrDefault(d => d.Day == record.Day - 1 && !d.Summary.NullOrEmpty())?.Summary;
-            string llmIn = prevSummary.NullOrEmpty()
-                ? (record.Timeline ?? "")
-                : $"=== PREVIOUS DAY SUMMARY (context only — do not summarise this) ===\n{prevSummary.Trim()}\n\n{record.Timeline}";
-            secs.Add(("LLM IN",  new Color(0.65f, 0.55f, 0.80f), llmIn));
-            secs.Add(("LLM OUT", new Color(0.45f, 0.75f, 0.65f), summaryText));
+            if (!statusContent.NullOrEmpty())            secs.Add(("STATUS",  AcJournal, statusContent));
+            if (!combatContent.NullOrEmpty())            secs.Add(("COMBAT",  AcWarning, combatContent));
+            if (!hazardContent.NullOrEmpty())            secs.Add(("HAZARDS", AcWarning, hazardContent));
+            if (!record.QuestSnapshot.NullOrEmpty())     secs.Add(("QUESTS",  AcJournal, record.QuestSnapshot));
+            if (Prefs.DevMode)
+            {
+                string prevSummary = past.FirstOrDefault(d => d.Day == record.Day - 1 && !d.Summary.NullOrEmpty())?.Summary;
+                string llmIn = prevSummary.NullOrEmpty()
+                    ? (record.Timeline ?? "")
+                    : $"=== PREVIOUS DAY SUMMARY (context only — do not summarise this) ===\n{prevSummary.Trim()}\n\n{record.Timeline}";
+                secs.Add(("LLM IN", AcThreads, llmIn));
+                secs.Add(("LLM OUT", AcSummary, summaryText));
+            }
 
-            DrawSectioned(rect, secs, $"day{record.Day}", AcEvents, $"DAY {record.Day}");
+            DrawSectioned(rect, secs, $"day{record.Day}", AcJournal, $"DAY {record.Day}");
+        }
+
+        private static string PendingSummaryText()
+        {
+            int dots = 1 + Mathf.FloorToInt(Time.realtimeSinceStartup * 2f) % 3;
+            return "I am still considering how this day should be remembered" + new string('.', dots) + " — Fillion";
         }
 
         // ── Quests view ───────────────────────────────────────────────────────
@@ -660,7 +828,6 @@ namespace Firefly
         {
             base.PreOpen();
             _scrolls.Clear();
-            _threadListScroll = Vector2.zero;
             _selectedThreadId = null;
         }
     }

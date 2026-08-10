@@ -79,6 +79,7 @@ namespace Firefly
         private Dictionary<string, PawnHealthSnapshot> _prevDayHealth    = new Dictionary<string, PawnHealthSnapshot>();
         private Dictionary<string, string>             _prevDayRelations = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevDaySkills    = new Dictionary<string, string>();
+        private Dictionary<string, string>             _prevFactionRelations = new Dictionary<string, string>();
 
         private float _prevColonyFoodDays = -1f;
         private int   _prevColonyMedicine = -1;
@@ -515,7 +516,7 @@ namespace Firefly
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
-        public void AddFactToThread(string threadId, long tick, string text)
+        public void AddFactToThread(string threadId, long tick, int day, string text)
         {
             threadId = threadId?.Trim();
             if (threadId.NullOrEmpty() || text.NullOrEmpty()) return;
@@ -529,7 +530,7 @@ namespace Firefly
                 Log.Warning($"[Firefly] AddFactToThread: no thread with id \"{threadId}\" — fact dropped: {flat}");
                 return;
             }
-            thread.Facts.Add(new StoryThreadFact { Tick = tick, Text = flat });
+            thread.Facts.Add(new StoryThreadFact { Tick = tick, Day = day, Text = flat });
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
@@ -544,6 +545,34 @@ namespace Firefly
                 return;
             }
             thread.Description = summary.Trim();
+        }
+
+        // Main-thread only. Queue via MainThreadQueue from async callbacks.
+        // Marks a thread as touched at this tick — drives the UI's "updated today" badge.
+        public void TouchStoryThread(string id, long tick)
+        {
+            id = id?.Trim();
+            if (id.NullOrEmpty()) return;
+            var thread = _storyThreads.FirstOrDefault(s => s.Id == id);
+            if (thread != null) thread.LastTouchedTick = tick;
+        }
+
+        // Main-thread only. Queue via MainThreadQueue from async callbacks. Appends one
+        // permanent, never-revised chunk and advances the cursor past the facts it covers in
+        // the same call — the two always move together so a chunk can never be recorded without
+        // the cursor reflecting it (or vice versa).
+        public void AddThreadChunk(string threadId, int startDay, int endDay, string summary, int chunkedThroughFactIndex)
+        {
+            threadId = threadId?.Trim();
+            if (threadId.NullOrEmpty() || summary.NullOrEmpty()) return;
+            var thread = _storyThreads.FirstOrDefault(s => s.Id == threadId);
+            if (thread == null)
+            {
+                Log.Warning($"[Firefly] AddThreadChunk: no thread with id \"{threadId}\" — chunk dropped.");
+                return;
+            }
+            thread.Chunks.Add(new StoryThreadChunk { StartDay = startDay, EndDay = endDay, Summary = summary.Trim() });
+            thread.ChunkedThroughFactIndex = chunkedThroughFactIndex;
         }
 
         // Full context string for LLM or UI consumption.
@@ -731,6 +760,15 @@ namespace Firefly
             }
             _prevDayRelations = currentRelations;
 
+            var currentFactionRelations = GetFactionRelationSnapshot();
+            string factionChanges = BuildFactionRelationChanges(currentFactionRelations);
+            if (!factionChanges.NullOrEmpty())
+            {
+                sb.AppendLine();
+                sb.Append(factionChanges);
+            }
+            _prevFactionRelations = currentFactionRelations;
+
             var currentSkills = GetSkillSnapshot(colonists);
             string skillChanges = BuildSkillChanges(currentSkills);
             if (!skillChanges.NullOrEmpty())
@@ -857,6 +895,69 @@ namespace Firefly
                     sb.AppendLine($"    {change}");
             }
             return sb.ToString();
+        }
+
+        // ── Faction relations ─────────────────────────────────────────────────
+
+        private static Dictionary<string, string> GetFactionRelationSnapshot()
+        {
+            var snapshot = new Dictionary<string, string>();
+            var factions = Find.FactionManager?.AllFactionsVisible;
+            if (factions == null) return snapshot;
+
+            foreach (var faction in factions)
+            {
+                if (faction == null || faction.IsPlayer || faction.defeated || !faction.HasGoodwill) continue;
+                snapshot[faction.GetUniqueLoadID()] = $"{faction.PlayerGoodwill}|{faction.PlayerRelationKind}";
+            }
+            return snapshot;
+        }
+
+        private string BuildFactionRelationChanges(Dictionary<string, string> current)
+        {
+            if (_prevFactionRelations.Count == 0) return "";
+
+            var factionsById = (Find.FactionManager?.AllFactionsVisible ?? Enumerable.Empty<Faction>())
+                .Where(f => f != null)
+                .ToDictionary(f => f.GetUniqueLoadID(), f => f);
+
+            var lines = new List<string>();
+            foreach (var kvp in current)
+            {
+                if (!_prevFactionRelations.TryGetValue(kvp.Key, out string prevValue)) continue;
+                if (!factionsById.TryGetValue(kvp.Key, out Faction faction)) continue;
+
+                ParseFactionEntry(kvp.Value,  out int curGoodwill,  out FactionRelationKind curKind);
+                ParseFactionEntry(prevValue,  out int prevGoodwill, out FactionRelationKind prevKind);
+
+                var changes = new List<string>();
+                if (curKind != prevKind)
+                    changes.Add($"relations with the colony shifted from {prevKind} to {curKind}");
+
+                int delta = curGoodwill - prevGoodwill;
+                if (Math.Abs(delta) >= 10)
+                {
+                    string dir = delta > 0 ? "improved" : "worsened";
+                    changes.Add($"goodwill {dir}: {prevGoodwill:+#;-#;0} → {curGoodwill:+#;-#;0}");
+                }
+
+                if (changes.Any())
+                    lines.Add($"  {faction.Name ?? "Unknown Faction"}: {string.Join(", ", changes)}");
+            }
+
+            if (!lines.Any()) return "";
+
+            var sb = new StringBuilder();
+            sb.AppendLine("=== FACTION RELATIONS ===");
+            foreach (var line in lines) sb.AppendLine(line);
+            return sb.ToString();
+        }
+
+        private static void ParseFactionEntry(string value, out int goodwill, out FactionRelationKind kind)
+        {
+            var parts = value?.Split('|') ?? new string[0];
+            goodwill = parts.Length > 0 && int.TryParse(parts[0], out int g) ? g : 0;
+            kind     = parts.Length > 1 && Enum.TryParse(parts[1], out FactionRelationKind k) ? k : FactionRelationKind.Neutral;
         }
 
         private static Dictionary<string, string> GetSkillSnapshot(List<Pawn> colonists)
@@ -988,6 +1089,7 @@ namespace Firefly
             Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",     LookMode.Value, LookMode.Value);
+            Scribe_Collections.Look(ref _prevFactionRelations, "prevFactionRelations", LookMode.Value, LookMode.Value);
             Scribe_Values.Look(ref _prevColonyFoodDays, "prevColonyFoodDays", -1f);
             Scribe_Values.Look(ref _prevColonyMedicine, "prevColonyMedicine", -1);
             Scribe_Values.Look(ref _prevColonyWealth,   "prevColonyWealth",   -1f);
@@ -1031,6 +1133,7 @@ namespace Firefly
             if (_colonyHistory    == null) _colonyHistory    = "";
             if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
             if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
+            if (_prevFactionRelations == null) _prevFactionRelations = new Dictionary<string, string>();
 
             _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
             if (health != null)

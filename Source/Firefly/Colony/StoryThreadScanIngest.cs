@@ -9,13 +9,16 @@ using Verse;
 namespace Firefly
 {
     // Parses and applies the single day-end scan response that drives Story Threads: it decides
-    // which threads are new vs. updated, and writes each one's full summary directly (using the
-    // existing-threads context block it was given) — no separate rewrite pass. Kept out of
-    // ColonyLedger — this is response parsing and id generation, not ledger state.
+    // which threads are new vs. updated and records their facts. It only ever writes a summary
+    // itself for a brand-new thread (a short one, to avoid leaving it blank); an existing
+    // thread's full summary is written by a separate per-thread pass in JournalRecorder, derived
+    // from that thread's complete fact record rather than patched here. Kept out of ColonyLedger
+    // — this is response parsing and id generation, not ledger state.
     public static class StoryThreadScanIngest
     {
-        // Context block for the scan prompt: every existing thread's id, name, and current
-        // summary (never its Facts ledger — that stays internal bookkeeping).
+        // Context block of every existing thread's id, name, and current summary — the single
+        // scan call always gets the full set, never filtered, so it has enough to judge relevance
+        // and avoid duplicate threads on its own.
         public static string BuildThreadContextBlock(ColonyLedger ledger)
         {
             var threads = ledger.StoryThreads;
@@ -34,15 +37,24 @@ namespace Firefly
         }
 
         // Applies the scan response: creates new_threads (locally-generated slugified ids, with
-        // their initial summary and facts) and applies updates (matched by id — never by name) —
-        // each update's facts are appended to the ledger and its summary is the LLM's full
-        // rewrite, written straight onto Description.
-        public static void ApplyScanResult(ColonyLedger ledger, string rawJson)
+        // their initial short summary and facts — written directly here, since a brand-new
+        // thread needs SOME summary right away and doesn't yet have a fact history worth a full
+        // per-thread summarize pass) and applies updates (matched by id — never by name) — an
+        // update entry only ever carries facts now, never a summary; the full summary for a
+        // touched existing thread is written separately, derived from its complete fact record
+        // (chunks + unchunked tail) rather than patched onto whatever this call last wrote.
+        // Returns null only when rawJson itself couldn't be parsed — that's the caller's signal
+        // to retry the request; a malformed individual entry inside otherwise-valid JSON is
+        // skipped and logged, not a retry trigger. A non-null (possibly empty) list of touched
+        // EXISTING thread ids is always the valid-JSON case, same convention as ParseRelevantIds —
+        // the caller uses it to dispatch each one's summarize pass.
+        public static List<string> ApplyScanResult(ColonyLedger ledger, string rawJson, int day)
         {
             JObject root = TryParse(rawJson, "thread scan");
-            if (root == null) return;
+            if (root == null) return null;
 
             var existingIds = new HashSet<string>(ledger.StoryThreads.Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+            var touchedExisting = new List<string>();
 
             foreach (var entry in AsArray(root["new_threads"]))
             {
@@ -58,13 +70,15 @@ namespace Firefly
 
                     string id = GenerateThreadId(name, existingIds);
                     existingIds.Add(id);
+                    long now = Find.TickManager.TicksAbs;
                     ledger.AddStoryThread(id, name, summary);
+                    ledger.TouchStoryThread(id, now);
 
                     foreach (var factTok in AsArray(entry["facts"]))
                     {
                         string fact = factTok?.Value<string>();
                         if (!fact.NullOrEmpty())
-                            ledger.AddFactToThread(id, Find.TickManager.TicksAbs, fact);
+                            ledger.AddFactToThread(id, now, day, fact);
                     }
                 }
                 catch (Exception e)
@@ -84,33 +98,140 @@ namespace Firefly
                         continue;
                     }
 
+                    long now      = Find.TickManager.TicksAbs;
+                    bool touched  = false;
+
                     foreach (var factTok in AsArray(entry["facts"]))
                     {
                         string fact = factTok?.Value<string>();
                         if (!fact.NullOrEmpty())
-                            ledger.AddFactToThread(id, Find.TickManager.TicksAbs, fact);
+                        {
+                            ledger.AddFactToThread(id, now, day, fact);
+                            touched = true;
+                        }
                     }
 
-                    string summary = entry["summary"]?.Value<string>();
-                    if (!summary.NullOrEmpty())
-                        ledger.UpdateStoryThreadSummary(id, summary);
+                    if (touched)
+                    {
+                        ledger.TouchStoryThread(id, now);
+                        touchedExisting.Add(id);
+                    }
                 }
                 catch (Exception e)
                 {
                     Log.Warning($"[Firefly] Thread scan: failed to apply an updates entry: {e.Message}");
                 }
             }
+
+            return touchedExisting;
         }
 
         private static JObject TryParse(string rawJson, string label)
         {
             if (rawJson.NullOrEmpty()) return null;
-            try { return JObject.Parse(ExtractJson(rawJson)); }
+            string extracted = ExtractJson(rawJson);
+            try { return JObject.Parse(extracted); }
             catch (Exception e)
             {
+                string repaired = TryAutoCloseBrackets(extracted);
+                if (repaired != null)
+                {
+                    try
+                    {
+                        var result = JObject.Parse(repaired);
+                        Log.Message($"[Firefly] {label} response was missing a closing bracket — auto-repaired.");
+                        return result;
+                    }
+                    catch { /* still broken — fall through to the warning below */ }
+                }
+
                 Log.Warning($"[Firefly] {label} response was not valid JSON: {e.Message}");
                 return null;
             }
+        }
+
+        // Cheap, deterministic structural fix for a common small-model failure mode: dropping a
+        // single closing bracket somewhere in a long generated JSON blob — observed in practice
+        // to survive even an LLM repair pass, since reproducing the whole blob verbatim doesn't
+        // reduce the bracket-tracking burden that caused the original slip. Tried before ever
+        // reaching for the LLM repair call. Deliberately conservative: never touches text inside
+        // an unterminated string, and bails (returns null) if more than a handful of closers are
+        // missing or mismatched — that's more likely real truncation than a one-bracket slip, and
+        // better left to the LLM repair call or a full retry than silently patched over.
+        private const int MaxAutoCloseInserts = 3;
+
+        private static string TryAutoCloseBrackets(string json)
+        {
+            var stack = new List<char>();
+            var sb = new StringBuilder(json.Length + MaxAutoCloseInserts);
+            bool inString = false;
+            int inserted = 0;
+
+            for (int i = 0; i < json.Length; i++)
+            {
+                char c = json[i];
+
+                if (inString)
+                {
+                    sb.Append(c);
+                    if (c == '\\' && i + 1 < json.Length)
+                    {
+                        sb.Append(json[++i]);
+                        continue;
+                    }
+                    if (c == '"') inString = false;
+                    continue;
+                }
+
+                if (c == '"') { inString = true; sb.Append(c); continue; }
+
+                if (c == '{' || c == '[')
+                {
+                    stack.Add(c == '{' ? '}' : ']');
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == '}' || c == ']')
+                {
+                    if (stack.Count > 0 && stack[stack.Count - 1] == c)
+                    {
+                        stack.RemoveAt(stack.Count - 1);
+                        sb.Append(c);
+                        continue;
+                    }
+
+                    // Mismatched closer — look back for the level it actually closes and insert
+                    // whatever's missing in between, rather than treating it as unrecoverable.
+                    int matchDepth = stack.LastIndexOf(c);
+                    if (matchDepth < 0) return null;
+
+                    int missing = stack.Count - 1 - matchDepth;
+                    if (inserted + missing > MaxAutoCloseInserts) return null;
+
+                    for (int k = stack.Count - 1; k > matchDepth; k--)
+                    {
+                        sb.Append(stack[k]);
+                        inserted++;
+                    }
+                    stack.RemoveRange(matchDepth, stack.Count - matchDepth);
+                    sb.Append(c);
+                    continue;
+                }
+
+                sb.Append(c);
+            }
+
+            if (inString) return null; // Unterminated string — real truncation, not a bracket slip.
+            if (stack.Count == 0) return inserted > 0 ? sb.ToString() : null;
+            if (stack.Count + inserted > MaxAutoCloseInserts) return null;
+
+            for (int k = stack.Count - 1; k >= 0; k--)
+            {
+                sb.Append(stack[k]);
+                inserted++;
+            }
+            return sb.ToString();
         }
 
         private static IEnumerable<JToken> AsArray(JToken token) =>

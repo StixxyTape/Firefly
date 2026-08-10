@@ -27,6 +27,43 @@ namespace Firefly
     {
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
+        // Counts real narrative requests only (Send, not TestConnection) — drives the "Fillion is
+        // writing" UI indicator and the quit-warning patches. Incremented synchronously on the main
+        // thread right before the background task starts, decremented on the main thread right as
+        // the queued callback fires — both sides run on the main thread, so no cross-thread race,
+        // Interlocked here is just defensive.
+        private static int _pendingCount;
+        public static bool IsPending => System.Threading.Volatile.Read(ref _pendingCount) > 0;
+
+        // Per-label pending counts — drives the nav-tab "which section is Fillion writing"
+        // highlight, which needs to know not just "something's pending" but "is it one of
+        // these specific labels". Same main-thread-only increment/decrement guarantee as
+        // _pendingCount above; the lock is just defensive, not load-bearing.
+        private static readonly Dictionary<string, int> _pendingByLabel = new Dictionary<string, int>();
+        private static readonly object _pendingByLabelLock = new object();
+
+        // Named distinctly from the IsPending property above — C# won't allow a property and a
+        // method to share one name on the same type.
+        public static bool IsPendingForAny(params string[] labels)
+        {
+            lock (_pendingByLabelLock)
+            {
+                foreach (var label in labels)
+                    if (_pendingByLabel.TryGetValue(label, out int count) && count > 0)
+                        return true;
+            }
+            return false;
+        }
+
+        private static void AdjustLabelPending(string label, int delta)
+        {
+            lock (_pendingByLabelLock)
+            {
+                _pendingByLabel.TryGetValue(label, out int count);
+                _pendingByLabel[label] = count + delta;
+            }
+        }
+
         static LLMClient()
         {
             // RimWorld's Mono runtime negotiates an older TLS version by default on some platforms,
@@ -35,7 +72,12 @@ namespace Firefly
             catch (Exception e) { Log.Warning($"[Firefly] Could not enable TLS 1.2: {e.Message}"); }
         }
 
+        // label identifies the call in every log line it produces (both here and inside
+        // SendAsync's own retry-attempt warnings) — e.g. "ThreadScan", "DailySummary".
+        // Required, not optional: with several distinct call sites now sharing this one choke
+        // point, a generic unlabelled log line is no longer usable for debugging.
         public static void Send(
+            string label,
             string systemPrompt,
             string userPrompt,
             Action<string> onSuccess,
@@ -44,7 +86,7 @@ namespace Firefly
             // Single choke point for every narrative request — max_tokens caps the reply, not the
             // prompt, and a raid-heavy day produces a log far larger than most context windows.
             var settings = FireflyMod.Settings;
-            userPrompt = TruncateForPrompt(userPrompt, settings.MaxPromptChars);
+            userPrompt = TruncateForPrompt(label, userPrompt, settings.MaxPromptChars);
 
             var messages = new List<ChatMessage>
             {
@@ -56,7 +98,13 @@ namespace Firefly
             string apiKey  = settings.ApiKey  ?? "";
             string baseUrl = settings.BaseUrl ?? "";
             string model   = settings.Model   ?? "";
-            Task.Run(async () => await SendAsync(messages, apiKey, baseUrl, model, onSuccess, onError));
+
+            System.Threading.Interlocked.Increment(ref _pendingCount);
+            AdjustLabelPending(label, 1);
+            Task.Run(async () => await SendAsync(
+                label, messages, apiKey, baseUrl, model,
+                onSuccess: content => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onSuccess(content); },
+                onError:   err     => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onError(err); }));
         }
 
         public static void TestConnection(Action<bool, string> onResult)
@@ -70,7 +118,7 @@ namespace Firefly
                 new ChatMessage("user", "Reply with only the word: ok")
             };
             Task.Run(async () => await SendAsync(
-                messages,
+                "TestConnection", messages,
                 apiKey, baseUrl, model,
                 response => onResult(true, response.Trim()),
                 error => onResult(false, error)
@@ -79,7 +127,7 @@ namespace Firefly
 
         // Keeps the head (day header, character roster) and the tail (latest events, health
         // section) — the two ends that carry the most narrative weight.
-        public static string TruncateForPrompt(string text, int maxChars)
+        public static string TruncateForPrompt(string label, string text, int maxChars)
         {
             if (text == null || maxChars <= 0 || text.Length <= maxChars) return text;
 
@@ -90,11 +138,12 @@ namespace Firefly
             int head = (int)(budget * 0.4f);
             int tail = budget - head;
             string result = text.Substring(0, head) + marker + text.Substring(text.Length - tail);
-            Log.Message($"[Firefly] Prompt truncated {text.Length} → {result.Length} chars (limit {maxChars}).");
+            Log.Message($"[Firefly:{label}] Prompt truncated {text.Length} → {result.Length} chars (limit {maxChars}).");
             return result;
         }
 
         private static async Task SendAsync(
+            string label,
             List<ChatMessage> messages,
             string apiKey,
             string baseUrl,
@@ -109,7 +158,7 @@ namespace Firefly
             }
 
             string lastError = null;
-            const int maxAttempts = 3;
+            const int maxAttempts = 4;
             const int maxErrorChars = 500;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -149,7 +198,7 @@ namespace Firefly
                             {
                                 int code = (int)response.StatusCode;
                                 lastError = $"HTTP {code}: {Truncate(body, maxErrorChars)}";
-                                Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
                                 // Bad key, bad model, bad request — retrying changes nothing. Only 429 is worth another try.
                                 if (code >= 400 && code < 500 && code != 429) break;
                                 continue;
@@ -159,7 +208,7 @@ namespace Firefly
                             if (content == null)
                             {
                                 lastError = "Malformed response — no content field in reply.";
-                                Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
                                 continue;
                             }
 
@@ -171,17 +220,25 @@ namespace Firefly
                 catch (TaskCanceledException)
                 {
                     lastError = "Timed out after 60s.";
-                    Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                    LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
                 }
                 catch (Exception e)
                 {
                     lastError = Truncate(e.Message, maxErrorChars);
-                    Log.Warning($"[Firefly] LLM attempt {attempt}/{maxAttempts} failed: {lastError}");
+                    LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
                 }
             }
 
             MainThreadQueue.Enqueue(() => onError($"Request failed. Last error: {lastError}"));
         }
+
+        // SendAsync runs on a background Task.Run thread — RimWorld's Log.Warning/Message write
+        // into a plain Queue<T> that the dev log window enumerates on the main thread whenever
+        // it's open, so calling Log.Warning directly from here can race with that enumeration
+        // and throw "Collection was modified" out of EditWindow_Log. Route through the same
+        // MainThreadQueue everything else in this method already uses for callbacks.
+        private static void LogWarningOnMainThread(string message) =>
+            MainThreadQueue.Enqueue(() => Log.Warning(message));
 
         private static string Truncate(string text, int maxChars)
         {
