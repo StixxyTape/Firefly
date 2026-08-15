@@ -456,9 +456,10 @@ namespace Firefly
         // when several interrupted days are recovered together.
         private void StartNextPendingThreadScan()
         {
-            // A later day must see summaries produced by every earlier applied scan. This also
-            // makes load recovery resume persisted follow-up work before scanning queued days.
-            if (_activeThreadScanDay.HasValue || _pendingThreadSummaries.Count > 0 || !IsStillActive) return;
+            // A later day waits only for work that can still change a summary this session.
+            // Persisted failed items remain queued for load-time recovery, but must not stall all
+            // future scans after their in-session attempt has already settled.
+            if (_activeThreadScanDay.HasValue || _threadWork.Values.Any(s => s.InFlight) || !IsStillActive) return;
             var next = _pendingThreadScans
                 .Where(s => !_attemptedThreadScanDays.Contains(s.Day))
                 .OrderBy(s => s.Day)
@@ -699,11 +700,10 @@ namespace Firefly
             }
 
             if (completed)
-            {
                 _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
-                StartNextPendingThreadScan();
-            }
+
             state.InFlight = false;
+            StartNextPendingThreadScan();
         }
 
         // Writes a touched thread's complete summary from scratch — condensed history (permanent
