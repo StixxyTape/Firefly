@@ -152,9 +152,9 @@ namespace Firefly
             foreach (var token in newThreads)
             {
                 if (!(token is JObject entry) || !IsNonEmptyString(entry["name"]) ||
-                    !IsString(entry["summary"]) || !IsStringArray(entry["facts"]))
+                    !IsNonEmptyString(entry["summary"]) || !IsNonEmptyStringArray(entry["facts"]))
                 {
-                    error = "each new_threads entry requires a name, summary, and string facts array";
+                    error = "each new_threads entry requires a non-empty name, summary, and facts array";
                     return false;
                 }
             }
@@ -162,9 +162,9 @@ namespace Firefly
             foreach (var token in updates)
             {
                 if (!(token is JObject entry) || !IsNonEmptyString(entry["id"]) ||
-                    !IsStringArray(entry["facts"]))
+                    !IsNonEmptyStringArray(entry["facts"]))
                 {
-                    error = "each updates entry requires an id and string facts array";
+                    error = "each updates entry requires an id and at least one non-empty fact";
                     return false;
                 }
 
@@ -179,11 +179,10 @@ namespace Firefly
             return true;
         }
 
-        private static bool IsString(JToken token) => token?.Type == JTokenType.String;
         private static bool IsNonEmptyString(JToken token) =>
-            IsString(token) && !token.Value<string>().NullOrEmpty();
-        private static bool IsStringArray(JToken token) =>
-            token is JArray array && array.All(item => item?.Type == JTokenType.String);
+            token?.Type == JTokenType.String && !token.Value<string>().Trim().NullOrEmpty();
+        private static bool IsNonEmptyStringArray(JToken token) =>
+            token is JArray array && array.Count > 0 && array.All(IsNonEmptyString);
 
         private static JObject TryParse(string rawJson, string label)
         {

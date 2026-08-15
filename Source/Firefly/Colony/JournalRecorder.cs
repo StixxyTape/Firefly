@@ -77,10 +77,10 @@ namespace Firefly
         {
             if (!_enabled || !IsStillActive) return;
 
-            StartNextPendingThreadScan();
-
             foreach (var threadId in _pendingThreadSummaries.ToList())
                 EnqueueThreadWork(threadId);
+
+            StartNextPendingThreadScan();
         }
 
         private static Map ResolveJournalMap()
@@ -456,7 +456,9 @@ namespace Firefly
         // when several interrupted days are recovered together.
         private void StartNextPendingThreadScan()
         {
-            if (_activeThreadScanDay.HasValue || !IsStillActive) return;
+            // A later day must see summaries produced by every earlier applied scan. This also
+            // makes load recovery resume persisted follow-up work before scanning queued days.
+            if (_activeThreadScanDay.HasValue || _pendingThreadSummaries.Count > 0 || !IsStillActive) return;
             var next = _pendingThreadScans
                 .Where(s => !_attemptedThreadScanDays.Contains(s.Day))
                 .OrderBy(s => s.Day)
@@ -508,8 +510,8 @@ namespace Firefly
 
                     if (touchedExisting != null)
                     {
-                        CompletePendingThreadScan(day);
                         foreach (var id in touchedExisting) EnqueueThreadWork(id);
+                        CompletePendingThreadScan(day);
                         return;
                     }
 
@@ -580,8 +582,8 @@ namespace Firefly
                     if (touchedExisting != null)
                     {
                         Log.Message($"[Firefly:{ThreadRepairLabel}] Repair succeeded — full retry avoided.");
-                        CompletePendingThreadScan(day);
                         foreach (var id in touchedExisting) EnqueueThreadWork(id);
+                        CompletePendingThreadScan(day);
                         return;
                     }
 
@@ -663,6 +665,7 @@ namespace Firefly
             {
                 _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
                 state.InFlight = false;
+                StartNextPendingThreadScan();
                 return;
             }
 
@@ -696,7 +699,10 @@ namespace Firefly
             }
 
             if (completed)
+            {
                 _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
+                StartNextPendingThreadScan();
+            }
             state.InFlight = false;
         }
 
