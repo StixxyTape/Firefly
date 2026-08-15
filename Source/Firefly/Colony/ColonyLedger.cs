@@ -50,6 +50,7 @@ namespace Firefly
         private readonly CombatEventBuffer  _combatBuffer    = new CombatEventBuffer();
         private readonly PawnHealthTracker  _healthTracker   = new PawnHealthTracker();
         private readonly RelationTracker    _relationTracker = new RelationTracker();
+        private readonly RosterTracker      _rosterTracker   = new RosterTracker();
 
         private float _prevColonyFoodDays = -1f;
         private int   _prevColonyMedicine = -1;
@@ -68,12 +69,6 @@ namespace Firefly
 
         // ── Live timeline buffer ──────────────────────────────────────────────
         private bool                             _dayHeaderWritten        = false;
-        private readonly HashSet<string>         _trackedPawnIds          = new HashSet<string>();
-        // Keyed by the pawn's stable ThingID (never by displayed name/line — pawns can share
-        // names or be renamed, which made the old name-matching update logic fragile) so a
-        // pawn's category can be found and refreshed later regardless of what changed about them.
-        private readonly List<(string Id, string Line, string Descriptor)> _trackedPawnLines =
-            new List<(string, string, string)>();
         private readonly StringBuilder           _timelineBuffer          = new StringBuilder();
         private readonly HashSet<int>            _mentionedQuestIds       = new HashSet<int>();
 
@@ -504,9 +499,9 @@ namespace Firefly
             // Prisoners and slaves that appeared in today's roster
             var captives = new List<Pawn>();
             if (map.mapPawns?.PrisonersOfColonySpawned != null)
-                captives.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null && _trackedPawnIds.Contains(p.ThingID ?? "")));
+                captives.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null && _rosterTracker.TrackedPawnIds.Contains(p.ThingID ?? "")));
             if (map.mapPawns?.SlavesOfColonySpawned != null)
-                captives.AddRange(map.mapPawns.SlavesOfColonySpawned.Where(p => p != null && _trackedPawnIds.Contains(p.ThingID ?? "")));
+                captives.AddRange(map.mapPawns.SlavesOfColonySpawned.Where(p => p != null && _rosterTracker.TrackedPawnIds.Contains(p.ThingID ?? "")));
 
             if (captives.Count > 0)
             {
@@ -532,7 +527,7 @@ namespace Firefly
             if (map.mapPawns?.PrisonersOfColonySpawned != null) allTracked.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null));
             if (map.mapPawns?.SlavesOfColonySpawned    != null) allTracked.AddRange(map.mapPawns.SlavesOfColonySpawned.Where(p => p != null));
 
-            string relationChanges = _relationTracker.BuildRelationSection(map, allTracked, _trackedPawnIds);
+            string relationChanges = _relationTracker.BuildRelationSection(map, allTracked, _rosterTracker.TrackedPawnIds);
             if (!relationChanges.NullOrEmpty())
             {
                 sb.AppendLine();
@@ -558,14 +553,10 @@ namespace Firefly
 
         // ── Save / load ───────────────────────────────────────────────────────
 
-        private const char FieldSep = '\t';
-
         public void ExposeData()
         {
             bool saving = Scribe.mode == LoadSaveMode.Saving;
 
-            var pawnIds      = saving ? _trackedPawnIds.ToList() : null;
-            var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Id}{FieldSep}{p.Line}{FieldSep}{p.Descriptor}").ToList() : null;
             var questIds     = saving ? _mentionedQuestIds.ToList() : null;
             string timelineSnapshot = saving ? _timelineBuffer.ToString() : null;
 
@@ -580,12 +571,11 @@ namespace Firefly
             Scribe_Values.Look(ref _prevColonyFoodDays, "prevColonyFoodDays", -1f);
             Scribe_Values.Look(ref _prevColonyMedicine, "prevColonyMedicine", -1);
             Scribe_Values.Look(ref _prevColonyWealth,   "prevColonyWealth",   -1f);
-            Scribe_Collections.Look(ref pawnIds,            "trackedPawnIds",    LookMode.Value);
-            Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines",  LookMode.Value);
             Scribe_Collections.Look(ref questIds,           "mentionedQuestIds", LookMode.Value);
             _combatBuffer.ExposeData();
             _healthTracker.ExposeData();
             _relationTracker.ExposeData();
+            _rosterTracker.ExposeData();
 
             if (Scribe.mode != LoadSaveMode.LoadingVars) return;
 
@@ -618,26 +608,9 @@ namespace Firefly
             }
             if (_colonyHistory    == null) _colonyHistory    = "";
 
-            _trackedPawnIds.Clear();
-            if (pawnIds != null)
-                foreach (var id in pawnIds) _trackedPawnIds.Add(id);
-
             _mentionedQuestIds.Clear();
             if (questIds != null)
                 foreach (var id in questIds) _mentionedQuestIds.Add(id);
-
-            _trackedPawnLines.Clear();
-            if (pawnLines != null)
-                foreach (var l in pawnLines)
-                {
-                    var p = l.Split(FieldSep);
-                    if (p.Length == 3) _trackedPawnLines.Add((p[0], p[1], p[2]));
-                    // Pre-fix save format (no stable id stored yet) — keep visible with an empty
-                    // id rather than dropping it; it just won't benefit from id-based refreshing
-                    // until this specific pawn is naturally re-encountered and re-added.
-                    else if (p.Length == 2) _trackedPawnLines.Add(("", p[0], p[1]));
-                }
-
         }
 
         // ── Pawn name formatting ──────────────────────────────────────────────
@@ -692,216 +665,47 @@ namespace Firefly
         public void Clear()
         {
             _combatBuffer.Clear();
+            _rosterTracker.Clear();
 
             _dayHeaderWritten = false;
             _mentionedQuestIds.Clear();
-            lock (_trackedPawnIds)   _trackedPawnIds.Clear();
-            lock (_trackedPawnLines) _trackedPawnLines.Clear();
             lock (_timelineBuffer)   _timelineBuffer.Length = 0;
         }
 
         // ── Pawn roster / tagging ─────────────────────────────────────────────
-
-        private static string GetPawnDescriptor(Pawn pawn)
-        {
-            try
-            {
-                if (pawn.IsFreeColonist)     return "Colonist";
-                if (pawn.IsSlaveOfColony)    return "Colony Slave";
-                if (pawn.IsPrisonerOfColony) return "Colony Prisoner";
-                if (pawn.RaceProps?.Animal == true)
-                    return pawn.Faction == Faction.OfPlayer ? "Colony Animal" : "Wild Animal";
-                string factionName = pawn.Faction?.Name;
-                if (factionName.NullOrEmpty()) return "No Faction";
-                bool hostile = pawn.Faction.HostileTo(Faction.OfPlayer);
-                return $"{factionName}, {(hostile ? "Hostile" : "Friendly")}";
-            }
-            catch { return "Unknown"; }
-        }
+        // (implementation in RosterTracker; these wrappers own the _initialized/_enabled gating
+        // that RosterTracker itself doesn't know about)
 
         public string IntroduceTag(Pawn pawn)
         {
             if (!_initialized || !_enabled || pawn == null) return "";
-            string id = pawn.ThingID;
-            if (id.NullOrEmpty()) return "";
-
-            string category = GetPawnDescriptor(pawn);
-            bool isNew;
-            lock (_trackedPawnIds) { isNew = _trackedPawnIds.Add(id); }
-
-            if (!isNew)
-            {
-                // Already introduced before — a pawn's category can change since then (recruited,
-                // manumitted, captured, freed, etc.), so refresh the stored entry silently rather
-                // than never touching it again. No repeated inline annotation for an old pawn.
-                lock (_trackedPawnLines)
-                {
-                    int idx = _trackedPawnLines.FindIndex(p => p.Id == id);
-                    if (idx >= 0 && _trackedPawnLines[idx].Descriptor != category)
-                        _trackedPawnLines[idx] = (id, _trackedPawnLines[idx].Line, category);
-                }
-                return "";
-            }
-
-            string line = BuildRosterLine(pawn);
-            lock (_trackedPawnLines) { _trackedPawnLines.Add((id, line, category)); }
-            return $" ({category})";
+            return _rosterTracker.IntroduceTag(pawn);
         }
 
         public void IntroduceEventLeader(Pawn pawn, string eventLabel, long tick)
         {
             if (!_initialized || pawn == null) return;
-            string id = pawn.ThingID;
-            if (id.NullOrEmpty()) return;
-
-            float lon = Find.WorldGrid?.LongLatOf(Find.CurrentMap?.Tile ?? 0).x ?? 0f;
-            int hr  = GenDate.HourInteger(tick, lon);
-            int min = (int)((GenDate.HourFloat(tick, lon) % 1f) * 60f);
-            string leaderLabel = $"Leader of the {eventLabel} [{hr:D2}:{min:D2}]";
-            string baseLine    = BuildRosterLine(pawn);
-            string newLine     = baseLine + $" — {leaderLabel}";
-            string category    = GetPawnDescriptor(pawn);
-
-            lock (_trackedPawnIds) { _trackedPawnIds.Add(id); }
-
-            lock (_trackedPawnLines)
-            {
-                // If the pawn was already introduced (e.g. via battle events before the letter),
-                // replace their existing entry with the leader-labelled version. Matched by their
-                // stable id, not by the old line's text — two pawns can share a displayed name.
-                int idx = _trackedPawnLines.FindIndex(p => p.Id == id);
-                if (idx >= 0)
-                    _trackedPawnLines[idx] = (id, newLine, category);
-                else
-                    _trackedPawnLines.Add((id, newLine, category));
-            }
-        }
-
-        private static string BuildRosterLine(Pawn pawn)
-        {
-            string fullName = PawnFullName(pawn);
-
-            var attrs = new List<string>();
-
-            if (pawn.gender != Gender.None)
-                attrs.Add(pawn.gender.ToString().ToLower());
-
-            int age = pawn.ageTracker?.AgeBiologicalYears ?? 0;
-            if (age > 0) attrs.Add(age.ToString());
-
-            string species = pawn.def?.label;
-            if (!species.NullOrEmpty()) attrs.Add(species);
-
-            try
-            {
-                var role = pawn.ideo?.Ideo?.GetRole(pawn);
-                if (role != null)
-                {
-                    string ideoName = pawn.ideo.Ideo.name;
-                    attrs.Add(ideoName.NullOrEmpty() ? role.LabelCap : $"{role.LabelCap} of {ideoName}");
-                }
-            }
-            catch { }
-
-            try
-            {
-                var titles = pawn.royalty?.AllTitlesForReading;
-                if (titles != null)
-                    foreach (var t in titles)
-                        if (t?.def != null)
-                        {
-                            string factionName = t.faction?.Name;
-                            attrs.Add(factionName.NullOrEmpty() ? t.def.LabelCap : $"{t.def.LabelCap} of {factionName}");
-                        }
-            }
-            catch { }
-
-            string callName = pawn.LabelShort;
-
-            string line = fullName;
-            if (attrs.Count > 0) line += $" — {string.Join(", ", attrs)}";
-            if (!callName.NullOrEmpty()) line += $" — refer to as \"{callName}\"";
-            return line;
+            _rosterTracker.IntroduceEventLeader(pawn, eventLabel, tick);
         }
 
         public void EnsureCaptivesIntroduced(Map map)
         {
-            if (!_initialized || map == null) return;
-            try
-            {
-                var prisoners = map.mapPawns.PrisonersOfColonySpawned;
-                if (prisoners != null)
-                    foreach (var p in prisoners) IntroduceTag(p);
-
-                var slaves = map.mapPawns.SlavesOfColonySpawned;
-                if (slaves != null)
-                    foreach (var p in slaves) IntroduceTag(p);
-            }
+            // Also gated on _enabled: the original per-pawn IntroduceTag calls this used to make
+            // were themselves gated on _enabled, so the net effect when disabled was always a
+            // no-op — made explicit here now that RosterTracker.IntroduceTag has no gate of its own.
+            if (!_initialized || !_enabled || map == null) return;
+            try { _rosterTracker.EnsureCaptivesIntroduced(map); }
             catch { }
         }
 
-        // Daily roster maintenance for common pawn-status transitions such as prisoner
-        // recruitment and slave manumission. IntroduceTag is idempotent for known pawns: it
-        // silently refreshes their stored category without emitting another inline introduction.
         public void RefreshTrackedPawnCategories(Map map)
         {
-            if (!_initialized || map?.mapPawns == null) return;
-            try
-            {
-                var colonists = map.mapPawns.FreeColonistsSpawned;
-                if (colonists != null)
-                    foreach (var p in colonists) IntroduceTag(p);
-
-                var prisoners = map.mapPawns.PrisonersOfColonySpawned;
-                if (prisoners != null)
-                    foreach (var p in prisoners) IntroduceTag(p);
-
-                var slaves = map.mapPawns.SlavesOfColonySpawned;
-                if (slaves != null)
-                    foreach (var p in slaves) IntroduceTag(p);
-            }
+            if (!_initialized || !_enabled || map?.mapPawns == null) return;
+            try { _rosterTracker.RefreshTrackedPawnCategories(map); }
             catch { }
         }
 
-        public string BuildPawnRosterSection()
-        {
-            lock (_trackedPawnLines)
-            {
-                if (_trackedPawnLines.Count == 0) return "";
-                var order = new[] { "Colonist", "Colony Slave", "Colony Prisoner", "Colony Animal", "Wild Animal" };
-                var groups = _trackedPawnLines
-                    .GroupBy(p => p.Descriptor)
-                    .OrderBy(g => { int i = System.Array.IndexOf(order, g.Key); return i >= 0 ? i : order.Length; })
-                    .ThenBy(g => g.Key);
-                var sb = new StringBuilder("=== CHARACTER ROSTER ===\n");
-                foreach (var group in groups)
-                {
-                    sb.AppendLine(RosterCategoryHeader(group.Key) + ":");
-                    foreach (var (_, line, _) in group)
-                        sb.AppendLine($"  - {line}");
-                }
-                return sb.ToString();
-            }
-        }
-
-        private static string RosterCategoryHeader(string descriptor)
-        {
-            switch (descriptor)
-            {
-                case "Colonist":        return "Colonists";
-                case "Colony Slave":    return "Colony Slaves";
-                case "Colony Prisoner": return "Colony Prisoners";
-                case "Colony Animal":   return "Colony Animals";
-                case "Wild Animal":     return "Wild Animals";
-                case "No Faction":      return "No Faction";
-                case "Unknown":         return "Unknown";
-                default:
-                    int comma = descriptor.IndexOf(", ", StringComparison.Ordinal);
-                    return comma >= 0
-                        ? $"{descriptor.Substring(0, comma)} ({descriptor.Substring(comma + 2)})"
-                        : descriptor;
-            }
-        }
+        public string BuildPawnRosterSection() => _rosterTracker.BuildPawnRosterSection();
 
         private static string InjectAfterFirst(string text, string name, string tag)
         {
