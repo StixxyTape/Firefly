@@ -3,6 +3,21 @@ using Verse;
 
 namespace Firefly
 {
+    // Durable input for a day whose Story Thread scan has not completed. Keeping the original
+    // record makes an interrupted or exhausted request recoverable after save/load without
+    // reconstructing a prompt from mutable colony state.
+    public class PendingThreadScan : IExposable
+    {
+        public int Day;
+        public string Timeline = "";
+
+        public void ExposeData()
+        {
+            Scribe_Values.Look(ref Day, "day", 0);
+            Scribe_Values.Look(ref Timeline, "timeline", "");
+        }
+    }
+
     public class StoryThreadFact : IExposable
     {
         public long   Tick;
@@ -71,6 +86,13 @@ namespace Firefly
                 Facts = new List<StoryThreadFact>();
             if (Scribe.mode == LoadSaveMode.LoadingVars && Chunks == null)
                 Chunks = new List<StoryThreadChunk>();
+            if (Scribe.mode == LoadSaveMode.PostLoadInit)
+            {
+                Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty());
+                Chunks.RemoveAll(c => c == null || c.Summary.NullOrEmpty());
+                ChunkedThroughFactIndex = System.Math.Max(0,
+                    System.Math.Min(ChunkedThroughFactIndex, Facts.Count));
+            }
         }
     }
 }

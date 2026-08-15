@@ -27,6 +27,13 @@ namespace Firefly
         private readonly Queue<DailyRecord> _backfillQueue = new Queue<DailyRecord>();
         private bool _backfillActive;
 
+        // These are logical work queues, not network state. Entries remain persisted until the
+        // corresponding scan or final thread summary has been applied successfully.
+        private List<PendingThreadScan> _pendingThreadScans = new List<PendingThreadScan>();
+        private List<string> _pendingThreadSummaries = new List<string>();
+        private readonly HashSet<int> _attemptedThreadScanDays = new HashSet<int>();
+        private int? _activeThreadScanDay;
+
         public JournalRecorder(ColonyLedger ledger)
         {
             _ledger = ledger;
@@ -45,6 +52,35 @@ namespace Firefly
             Scribe_Values.Look(ref _lastHourBucket,  "journalLastHourBucket",  -1);
             Scribe_Values.Look(ref _lastDrainHour,   "journalLastDrainHour",   -1);
             Scribe_Values.Look(ref _lastArchivedDay, "journalLastArchivedDay", -1);
+            Scribe_Collections.Look(ref _pendingThreadScans, "pendingThreadScans", LookMode.Deep);
+            Scribe_Collections.Look(ref _pendingThreadSummaries, "pendingThreadSummaries", LookMode.Value);
+
+            if (Scribe.mode == LoadSaveMode.LoadingVars)
+            {
+                if (_pendingThreadScans == null) _pendingThreadScans = new List<PendingThreadScan>();
+                if (_pendingThreadSummaries == null) _pendingThreadSummaries = new List<string>();
+                _pendingThreadScans.RemoveAll(s => s == null || s.Timeline.NullOrEmpty());
+                _pendingThreadScans = _pendingThreadScans
+                    .GroupBy(s => s.Day)
+                    .Select(g => g.Last())
+                    .OrderBy(s => s.Day)
+                    .ToList();
+                _pendingThreadSummaries = _pendingThreadSummaries
+                    .Where(id => !id.NullOrEmpty())
+                    .Select(id => id.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        public void RecoverInterruptedThreadWork()
+        {
+            if (!_enabled || !IsStillActive) return;
+
+            StartNextPendingThreadScan();
+
+            foreach (var threadId in _pendingThreadSummaries.ToList())
+                EnqueueThreadWork(threadId);
         }
 
         private static Map ResolveJournalMap()
@@ -331,7 +367,8 @@ namespace Firefly
                 _ledger.Clear();
 
                 SendSummaryRequest(day, fullContent);
-                SendThreadScanRequest(fullContent, day);
+                RememberPendingThreadScan(day, fullContent);
+                StartNextPendingThreadScan();
                 BackfillMissingSummaries(excludeDay: day);
             }
             catch (Exception e)
@@ -400,6 +437,37 @@ namespace Firefly
 
         private const int ThreadJsonMaxAttempts = 4;
 
+        private void RememberPendingThreadScan(int day, string content)
+        {
+            var existing = _pendingThreadScans.FirstOrDefault(s => s.Day == day);
+            if (existing != null) existing.Timeline = content;
+            else _pendingThreadScans.Add(new PendingThreadScan { Day = day, Timeline = content });
+        }
+
+        private void CompletePendingThreadScan(int day)
+        {
+            _pendingThreadScans.RemoveAll(s => s.Day == day);
+            _activeThreadScanDay = null;
+            StartNextPendingThreadScan();
+        }
+
+        // Scan days in order and never concurrently. Each response is classified against the
+        // thread index produced by all earlier days, avoiding duplicate or unknown-thread results
+        // when several interrupted days are recovered together.
+        private void StartNextPendingThreadScan()
+        {
+            if (_activeThreadScanDay.HasValue || !IsStillActive) return;
+            var next = _pendingThreadScans
+                .Where(s => !_attemptedThreadScanDays.Contains(s.Day))
+                .OrderBy(s => s.Day)
+                .FirstOrDefault();
+            if (next == null) return;
+
+            _activeThreadScanDay = next.Day;
+            _attemptedThreadScanDays.Add(next.Day);
+            SendThreadScanRequest(next.Timeline, next.Day);
+        }
+
         // Restored to the original single-call design: one call reads today's raw record plus
         // the full existing-thread index and decides new-vs-update AND writes each thread's
         // summary in the same response — no separate extraction, relevance, or write pass. Fires
@@ -440,6 +508,7 @@ namespace Firefly
 
                     if (touchedExisting != null)
                     {
+                        CompletePendingThreadScan(day);
                         foreach (var id in touchedExisting) EnqueueThreadWork(id);
                         return;
                     }
@@ -456,7 +525,12 @@ namespace Firefly
 
                     RetryOrGiveUp(content, day, attempt);
                 },
-                onError: err => Log.Warning($"[Firefly:{ThreadScanLabel}] Failed: {err}"));
+                onError: err =>
+                {
+                    _activeThreadScanDay = null;
+                    Log.Warning($"[Firefly:{ThreadScanLabel}] Failed: {err}. It will be retried after reload.");
+                    StartNextPendingThreadScan();
+                });
         }
 
         private void RetryOrGiveUp(string content, int day, int attempt)
@@ -468,7 +542,9 @@ namespace Firefly
             }
             else
             {
-                Log.Warning($"[Firefly:{ThreadScanLabel}] Gave up after {ThreadJsonMaxAttempts} attempts — invalid JSON each time.");
+                _activeThreadScanDay = null;
+                Log.Warning($"[Firefly:{ThreadScanLabel}] Gave up after {ThreadJsonMaxAttempts} attempts — work remains queued for recovery.");
+                StartNextPendingThreadScan();
             }
         }
 
@@ -504,6 +580,7 @@ namespace Firefly
                     if (touchedExisting != null)
                     {
                         Log.Message($"[Firefly:{ThreadRepairLabel}] Repair succeeded — full retry avoided.");
+                        CompletePendingThreadScan(day);
                         foreach (var id in touchedExisting) EnqueueThreadWork(id);
                         return;
                     }
@@ -551,6 +628,10 @@ namespace Firefly
 
         private void EnqueueThreadWork(string threadId)
         {
+            if (threadId.NullOrEmpty()) return;
+            if (!_pendingThreadSummaries.Contains(threadId, StringComparer.OrdinalIgnoreCase))
+                _pendingThreadSummaries.Add(threadId);
+
             if (!_threadWork.TryGetValue(threadId, out var state))
             {
                 state = new ThreadWorkState();
@@ -578,7 +659,12 @@ namespace Firefly
             if (!IsStillActive) { state.InFlight = false; return; }
 
             var thread = _ledger?.StoryThreads.FirstOrDefault(t => t.Id == threadId);
-            if (thread == null) { state.InFlight = false; return; }
+            if (thread == null)
+            {
+                _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
+                state.InFlight = false;
+                return;
+            }
 
             int unchunkedCount = thread.Facts.Count - thread.ChunkedThroughFactIndex;
             int unchunkedChars = 0;
@@ -598,7 +684,7 @@ namespace Firefly
         // failed and there's nothing further to do this pass. If more facts landed while this was
         // in flight, loops back through RunThreadWorkStep rather than just clearing the flag, so
         // nothing touched mid-flight gets silently left un-summarized.
-        private void FinishThreadWork(string threadId)
+        private void FinishThreadWork(string threadId, bool completed = false)
         {
             if (!_threadWork.TryGetValue(threadId, out var state)) return;
 
@@ -609,6 +695,8 @@ namespace Firefly
                 return;
             }
 
+            if (completed)
+                _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
             state.InFlight = false;
         }
 
@@ -655,7 +743,11 @@ namespace Firefly
                 {
                     Log.Message($"[Firefly:{ThreadSummarizeLabel}] Responded for thread \"{threadId}\": {prose}");
                     if (IsStillActive && !prose.NullOrEmpty())
+                    {
                         _ledger?.UpdateStoryThreadSummary(threadId, prose.Trim());
+                        FinishThreadWork(threadId, completed: true);
+                        return;
+                    }
                     FinishThreadWork(threadId);
                 },
                 onError: err =>

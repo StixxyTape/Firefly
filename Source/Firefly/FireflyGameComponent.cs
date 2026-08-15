@@ -33,7 +33,10 @@ namespace Firefly
                 // On load, kick off backfill for any days that have a timeline but no summary
                 // (e.g. days whose LLM request failed last session).
                 if (_loadedFromSave && _fireflyEnabled)
+                {
                     Recorder.TriggerBackfillOnLoad();
+                    Recorder.RecoverInterruptedThreadWork();
+                }
             }
             catch (Exception e) { Log.Warning($"[Firefly] FinalizeInit failed: {e.Message}"); }
         }
