@@ -47,9 +47,9 @@ namespace Firefly
         // the mod is fully inert when the player opted out.
         public void SetEnabled(bool enabled) => _enabled = enabled;
 
-        private readonly CombatEventBuffer _combatBuffer = new CombatEventBuffer();
+        private readonly CombatEventBuffer  _combatBuffer  = new CombatEventBuffer();
+        private readonly PawnHealthTracker  _healthTracker = new PawnHealthTracker();
 
-        private Dictionary<string, PawnHealthSnapshot> _prevDayHealth    = new Dictionary<string, PawnHealthSnapshot>();
         private Dictionary<string, string>             _prevDayRelations = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevDaySkills    = new Dictionary<string, string>();
         private Dictionary<string, string>             _prevFactionRelations = new Dictionary<string, string>();
@@ -496,34 +496,13 @@ namespace Firefly
             {
                 if (p == null) continue;
                 string name = PawnFullName(p);
-                string id   = p.ThingID ?? p.LabelShort ?? "?";
-                var    snap = TakePawnHealthSnapshot(p);
-                currentHealth[id] = snap;
-                _prevDayHealth.TryGetValue(id, out PawnHealthSnapshot prev);
-
-                string overallLine = $"Overall: {snap.HealthPct}%";
-                if (prev != null && prev.HealthPct != snap.HealthPct)
-                {
-                    int hDelta = snap.HealthPct - prev.HealthPct;
-                    overallLine += $" ({(hDelta < 0 ? "decreased" : "increased")} by {Math.Abs(hDelta)}% today)";
-                }
-                if (snap.BleedRatePct > 0 && snap.HoursUntilDeath > 0f)
-                    overallLine += $" — {snap.HoursUntilDeath:F1}h until death";
-
-                if (p.Dead)             overallLine += " — Dead";
-                else if (p.Downed)      overallLine += " — Downed";
-                else if (p.InMentalState) overallLine += $" — Mental break ({p.MentalStateDef?.label ?? "unknown"})";
-
-                string conditions = RenderHealthConditions(snap, prev);
-                if (conditions.NullOrEmpty() && snap.BleedRatePct == 0 && snap.HoursUntilDeath == 0f)
-                    overallLine += " — Healthy";
+                var (overallLine, conditions) = _healthTracker.DescribeAndSnapshot(p, currentHealth);
 
                 sb.AppendLine($"  {name} health overview:");
                 sb.AppendLine($"    - {overallLine}");
                 if (!conditions.NullOrEmpty())
                     sb.AppendLine($"    - {conditions}");
             }
-            _prevDayHealth = currentHealth;
 
             // Prisoners and slaves that appeared in today's roster
             var captives = new List<Pawn>();
@@ -539,27 +518,7 @@ namespace Firefly
                 foreach (var p in captives)
                 {
                     string name = PawnFullName(p);
-                    string id   = p.ThingID ?? p.LabelShort ?? "?";
-                    var    snap = TakePawnHealthSnapshot(p);
-                    currentHealth[id] = snap;
-                    _prevDayHealth.TryGetValue(id, out PawnHealthSnapshot prev);
-
-                    string overallLine = $"Overall: {snap.HealthPct}%";
-                    if (prev != null && prev.HealthPct != snap.HealthPct)
-                    {
-                        int hDelta = snap.HealthPct - prev.HealthPct;
-                        overallLine += $" ({(hDelta < 0 ? "decreased" : "increased")} by {Math.Abs(hDelta)}% today)";
-                    }
-                    if (snap.BleedRatePct > 0 && snap.HoursUntilDeath > 0f)
-                        overallLine += $" — {snap.HoursUntilDeath:F1}h until death";
-
-                    if (p.Dead)               overallLine += " — Dead";
-                    else if (p.Downed)        overallLine += " — Downed";
-                    else if (p.InMentalState) overallLine += $" — Mental break ({p.MentalStateDef?.label ?? "unknown"})";
-
-                    string conditions = RenderHealthConditions(snap, prev);
-                    if (conditions.NullOrEmpty() && snap.BleedRatePct == 0 && snap.HoursUntilDeath == 0f)
-                        overallLine += " — Healthy";
+                    var (overallLine, conditions) = _healthTracker.DescribeAndSnapshot(p, currentHealth);
 
                     string role = p.IsPrisonerOfColony ? "Prisoner" : "Slave";
                     sb.AppendLine($"  {name} ({role}) health overview:");
@@ -568,6 +527,9 @@ namespace Firefly
                         sb.AppendLine($"    - {conditions}");
                 }
             }
+            // Committed once, after both colonist and captive passes, so a captive's "yesterday"
+            // lookup above never sees a colonist (or its own) just-written entry from this batch.
+            _healthTracker.CommitDay(currentHealth);
 
             var allTracked = new List<Pawn>(colonists);
             if (map.mapPawns?.PrisonersOfColonySpawned != null) allTracked.AddRange(map.mapPawns.PrisonersOfColonySpawned.Where(p => p != null));
@@ -888,7 +850,6 @@ namespace Firefly
         {
             bool saving = Scribe.mode == LoadSaveMode.Saving;
 
-            var health    = saving ? _prevDayHealth.ToDictionary(kv => kv.Key, kv => kv.Value.Serialize()) : null;
             var pawnIds      = saving ? _trackedPawnIds.ToList() : null;
             var pawnLines    = saving ? _trackedPawnLines.Select(p => $"{p.Id}{FieldSep}{p.Line}{FieldSep}{p.Descriptor}").ToList() : null;
             var questIds     = saving ? _mentionedQuestIds.ToList() : null;
@@ -902,7 +863,6 @@ namespace Firefly
             Scribe_Values.Look(ref timelineSnapshot,   "timelineBuffer",    "");
             Scribe_Collections.Look(ref _pastDays,          "pastDays",         LookMode.Deep);
             Scribe_Collections.Look(ref _storyThreads,        "storyThreads",      LookMode.Deep);
-            Scribe_Collections.Look(ref health,             "prevDayHealth",    LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDayRelations,  "prevDayRelations",  LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevDaySkills,     "prevDaySkills",     LookMode.Value, LookMode.Value);
             Scribe_Collections.Look(ref _prevFactionRelations, "prevFactionRelations", LookMode.Value, LookMode.Value);
@@ -913,6 +873,7 @@ namespace Firefly
             Scribe_Collections.Look(ref pawnLines,          "trackedPawnLines",  LookMode.Value);
             Scribe_Collections.Look(ref questIds,           "mentionedQuestIds", LookMode.Value);
             _combatBuffer.ExposeData();
+            _healthTracker.ExposeData();
 
             if (Scribe.mode != LoadSaveMode.LoadingVars) return;
 
@@ -947,11 +908,6 @@ namespace Firefly
             if (_prevDayRelations == null) _prevDayRelations = new Dictionary<string, string>();
             if (_prevDaySkills    == null) _prevDaySkills    = new Dictionary<string, string>();
             if (_prevFactionRelations == null) _prevFactionRelations = new Dictionary<string, string>();
-
-            _prevDayHealth = new Dictionary<string, PawnHealthSnapshot>();
-            if (health != null)
-                foreach (var kv in health)
-                    _prevDayHealth[kv.Key] = PawnHealthSnapshot.Deserialize(kv.Value);
 
             _trackedPawnIds.Clear();
             if (pawnIds != null)
@@ -1244,192 +1200,6 @@ namespace Firefly
             int idx = text.IndexOf(name, StringComparison.OrdinalIgnoreCase);
             if (idx < 0) return text;
             return text.Substring(0, idx + name.Length) + tag + text.Substring(idx + name.Length);
-        }
-
-        // ── Health snapshot ───────────────────────────────────────────────────
-
-        private class PawnHealthSnapshot
-        {
-            public int   HealthPct;
-            public int   BleedRatePct;
-            public float HoursUntilDeath;
-            public List<(string Source, int Pct)>                             Injuries   = new List<(string, int)>();
-            public List<(string Label, int InfPct, int ImmPct, string SevLabel, bool Lethal)> Diseases = new List<(string, int, int, string, bool)>();
-            public List<(string Label, int SevPct, string SevLabel)>          Other      = new List<(string, int, string)>();
-            public List<string>                                               Addictions = new List<string>();
-
-            public string Serialize()
-            {
-                var sb = new StringBuilder();
-                sb.Append(HealthPct);
-                sb.Append($"|B:{BleedRatePct}:{HoursUntilDeath:F1}");
-                foreach (var i in Injuries)    sb.Append($"|I:{Esc(i.Source)}:{i.Pct}");
-                foreach (var d in Diseases)    sb.Append($"|D:{Esc(d.Label)}:{d.InfPct}:{d.ImmPct}:{Esc(d.SevLabel)}:{(d.Lethal ? 1 : 0)}");
-                foreach (var o in Other)       sb.Append($"|O:{Esc(o.Label)}:{o.SevPct}:{Esc(o.SevLabel)}");
-                foreach (var a in Addictions)  sb.Append($"|A:{Esc(a)}");
-                return sb.ToString();
-            }
-
-            public static PawnHealthSnapshot Deserialize(string s)
-            {
-                var snap = new PawnHealthSnapshot();
-                if (s.NullOrEmpty()) return snap;
-                var records = s.Split('|');
-                if (records.Length > 0 && int.TryParse(records[0], out int hp)) snap.HealthPct = hp;
-                for (int idx = 1; idx < records.Length; idx++)
-                {
-                    var r = records[idx];
-                    if (r.Length < 2) continue;
-                    var f = r.Substring(2).Split(':');
-                    switch (r[0])
-                    {
-                        case 'B':
-                            if (f.Length >= 2 && int.TryParse(f[0], out int br))
-                            {
-                                snap.BleedRatePct = br;
-                                if (float.TryParse(f[1], System.Globalization.NumberStyles.Float,
-                                    System.Globalization.CultureInfo.InvariantCulture, out float hud))
-                                    snap.HoursUntilDeath = hud;
-                            }
-                            break;
-                        case 'I': if (f.Length >= 2 && int.TryParse(f[1], out int ipct)) snap.Injuries.Add((Unesc(f[0]), ipct)); break;
-                        case 'D': if (f.Length >= 5 && int.TryParse(f[1], out int inf) && int.TryParse(f[2], out int imm)) snap.Diseases.Add((Unesc(f[0]), inf, imm, Unesc(f[3]), f[4] == "1")); break;
-                        case 'O': if (f.Length >= 3 && int.TryParse(f[1], out int spct)) snap.Other.Add((Unesc(f[0]), spct, Unesc(f[2]))); break;
-                        case 'A': if (f.Length >= 1) snap.Addictions.Add(Unesc(f[0])); break;
-                    }
-                }
-                return snap;
-            }
-
-            private static string Esc(string s)   => s?.Replace("%", "%25").Replace("|", "%7C").Replace(":", "%3A") ?? "";
-            private static string Unesc(string s)  => s?.Replace("%3A", ":").Replace("%7C", "|").Replace("%25", "%") ?? "";
-        }
-
-        private static PawnHealthSnapshot TakePawnHealthSnapshot(Pawn p)
-        {
-            var snap = new PawnHealthSnapshot();
-            try
-            {
-                var hediffSet = p.health?.hediffSet;
-                if (hediffSet == null) return snap;
-
-                snap.HealthPct = Mathf.RoundToInt((p.health?.summaryHealth?.SummaryHealthPercent ?? 1f) * 100f);
-
-                float bleedRate = hediffSet.BleedRateTotal;
-                if (bleedRate > 0.001f)
-                {
-                    snap.BleedRatePct = Mathf.RoundToInt(bleedRate * 100f);
-                    try
-                    {
-                        float ticks = HealthUtility.TicksUntilDeathDueToBloodLoss(p);
-                        if (ticks < float.MaxValue / 2f) snap.HoursUntilDeath = ticks / GenDate.TicksPerHour;
-                    }
-                    catch { }
-                }
-
-                var bad = hediffSet.hediffs.Where(h => h.Visible && h.def.isBad && !(h is Hediff_MissingPart)).ToList();
-                if (!bad.Any()) return snap;
-
-                var injuryList = bad.OfType<Hediff_Injury>().ToList();
-                float totalSev = injuryList.Sum(h => h.Severity);
-                float healthLoss = 1f - snap.HealthPct / 100f;
-                foreach (var group in injuryList.GroupBy(h => InjurySourceKey(h)).OrderBy(g => g.Key))
-                {
-                    int pct = totalSev > 0f
-                        ? Mathf.RoundToInt(group.Sum(h => h.Severity) / totalSev * healthLoss * 100f)
-                        : 0;
-                    snap.Injuries.Add((group.Key, pct));
-                }
-
-                var rest = bad.Where(h => !(h is Hediff_Injury)).ToList();
-
-                foreach (var h in rest.OfType<Hediff_Addiction>())
-                    snap.Addictions.Add(h.Chemical?.LabelCap ?? h.def.LabelCap);
-
-                foreach (var h in rest.Where(h => !(h is Hediff_Addiction) && h.def.HasComp(typeof(HediffComp_Immunizable))))
-                {
-                    var immunComp = h.TryGetComp<HediffComp_Immunizable>();
-                    snap.Diseases.Add((h.def.LabelCap, Mathf.RoundToInt(h.Severity * 100f),
-                        Mathf.RoundToInt((immunComp?.Immunity ?? 0f) * 100f), h.CurStage?.label ?? "", h.def.lethalSeverity >= 0f));
-                }
-
-                foreach (var h in rest.Where(h => !(h is Hediff_Addiction) && !h.def.HasComp(typeof(HediffComp_Immunizable))))
-                    snap.Other.Add((h.def.LabelCap, Mathf.RoundToInt(h.Severity * 100f), h.CurStage?.label ?? ""));
-            }
-            catch { }
-            return snap;
-        }
-
-        private static string RenderHealthConditions(PawnHealthSnapshot snap, PawnHealthSnapshot prev)
-        {
-            if (!snap.Injuries.Any() && !snap.Diseases.Any() && !snap.Other.Any() && !snap.Addictions.Any())
-                return "Healthy";
-
-            var parts = new List<string>();
-
-            var prevInj = prev?.Injuries.GroupBy(i => i.Source).ToDictionary(g => g.Key, g => g.First().Pct);
-            foreach (var inj in snap.Injuries)
-            {
-                string type   = string.Equals(inj.Source, "fire", StringComparison.OrdinalIgnoreCase) ? "Burns" : "Injuries";
-                string header = inj.Source == "scar"     ? "Old scars"
-                              : inj.Source.NullOrEmpty() ? $"{type} (unknown cause)"
-                              : $"{type} from {inj.Source}";
-                string detail = prevInj != null && prevInj.TryGetValue(inj.Source, out int pp) && pp != inj.Pct
-                    ? $"{inj.Pct}%, {(inj.Pct > pp ? "increased" : "decreased")} by {Math.Abs(inj.Pct - pp)}% today"
-                    : $"{inj.Pct}%";
-                parts.Add($"{header} - ({detail})");
-            }
-
-            var prevDis = prev?.Diseases.GroupBy(d => d.Label).ToDictionary(g => g.Key, g => g.First());
-            foreach (var d in snap.Diseases)
-            {
-                string header = d.SevLabel.NullOrEmpty() ? d.Label : $"{d.Label}, {d.SevLabel}";
-                string infStr, immStr;
-                if (prevDis != null && prevDis.TryGetValue(d.Label, out var pd))
-                {
-                    infStr = FieldDelta("affliction", d.InfPct, d.InfPct - pd.InfPct);
-                    immStr = FieldDelta("immunity",   d.ImmPct, d.ImmPct - pd.ImmPct);
-                }
-                else
-                {
-                    infStr = $"affliction {d.InfPct}%";
-                    immStr = $"immunity {d.ImmPct}%";
-                }
-                parts.Add($"{header} - ({infStr}, {immStr})");
-            }
-
-            var prevOth = prev?.Other.GroupBy(o => o.Label).ToDictionary(g => g.Key, g => g.First());
-            foreach (var o in snap.Other)
-            {
-                string header = o.SevLabel.NullOrEmpty() ? o.Label : $"{o.Label}, {o.SevLabel}";
-                string detail = prevOth != null && prevOth.TryGetValue(o.Label, out var po) && po.SevPct != o.SevPct
-                    ? $"{o.SevPct}%, {(o.SevPct > po.SevPct ? "increased" : "decreased")} by {Math.Abs(o.SevPct - po.SevPct)}% today"
-                    : $"{o.SevPct}%";
-                parts.Add($"{header} - ({detail})");
-            }
-
-            foreach (var a in snap.Addictions) parts.Add($"Addicted to {a}");
-
-            return string.Join("; ", parts);
-        }
-
-        private static string FieldDelta(string name, int pct, int delta) =>
-            delta != 0
-                ? $"{name} {pct}%, {(delta > 0 ? "increased" : "decreased")} by {Math.Abs(delta)}% today"
-                : $"{name} {pct}%";
-
-        private static string InjurySourceKey(Hediff_Injury h)
-        {
-            try
-            {
-                var def = Traverse.Create(h).Field("source").GetValue<ThingDef>();
-                if (def?.label != null) return def.label;
-            }
-            catch { }
-            if (!h.sourceLabel.NullOrEmpty()) return h.sourceLabel;
-            if (h.def?.defName == "Burn") return "fire";
-            if (h.TryGetComp<HediffComp_GetsPermanent>()?.IsPermanent == true) return "scar";
-            return "";
         }
 
         private static string GetPawnLocation(Pawn p)
