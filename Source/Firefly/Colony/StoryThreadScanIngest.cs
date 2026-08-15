@@ -54,6 +54,12 @@ namespace Firefly
             if (root == null) return null;
 
             var existingIds = new HashSet<string>(ledger.StoryThreads.Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+            if (!HasCompleteSchema(root, existingIds, out string validationError))
+            {
+                Log.Warning($"[Firefly] Thread scan response was incomplete or invalid: {validationError}");
+                return null;
+            }
+
             var touchedExisting = new List<string>();
 
             foreach (var entry in AsArray(root["new_threads"]))
@@ -125,6 +131,59 @@ namespace Firefly
 
             return touchedExisting;
         }
+
+        // Parsing alone is not success: a response truncated cleanly after one property can still
+        // be valid JSON. Validate the complete contract before applying any entry, making retries
+        // atomic and preventing a partial response from silently completing a day.
+        internal static bool HasCompleteSchema(JObject root, HashSet<string> existingIds, out string error)
+        {
+            error = null;
+            if (!(root?["new_threads"] is JArray newThreads))
+            {
+                error = "new_threads must be present and be an array";
+                return false;
+            }
+            if (!(root["updates"] is JArray updates))
+            {
+                error = "updates must be present and be an array";
+                return false;
+            }
+
+            foreach (var token in newThreads)
+            {
+                if (!(token is JObject entry) || !IsNonEmptyString(entry["name"]) ||
+                    !IsString(entry["summary"]) || !IsStringArray(entry["facts"]))
+                {
+                    error = "each new_threads entry requires a name, summary, and string facts array";
+                    return false;
+                }
+            }
+
+            foreach (var token in updates)
+            {
+                if (!(token is JObject entry) || !IsNonEmptyString(entry["id"]) ||
+                    !IsStringArray(entry["facts"]))
+                {
+                    error = "each updates entry requires an id and string facts array";
+                    return false;
+                }
+
+                string id = entry["id"].Value<string>().Trim();
+                if (!existingIds.Contains(id))
+                {
+                    error = $"update references unknown thread id \"{id}\"";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsString(JToken token) => token?.Type == JTokenType.String;
+        private static bool IsNonEmptyString(JToken token) =>
+            IsString(token) && !token.Value<string>().NullOrEmpty();
+        private static bool IsStringArray(JToken token) =>
+            token is JArray array && array.All(item => item?.Type == JTokenType.String);
 
         private static JObject TryParse(string rawJson, string label)
         {
