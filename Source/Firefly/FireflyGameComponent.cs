@@ -55,6 +55,14 @@ namespace Firefly
 
         public override void ExposeData()
         {
+            // A pending raid's pawns aren't spawned or saved anywhere — the storyteller already
+            // recorded the incident as fired, though, so if we let a save happen mid-wait and
+            // just drop them on load, that raid is gone forever with no letter ever shown. Force
+            // every pending raid to commit (with vanilla text if Fillion hasn't answered yet)
+            // before the save actually writes, so nothing is ever silently lost to a save/reload.
+            if (Scribe.mode == LoadSaveMode.Saving)
+                RaidNarrativeTracker.For(Verse.Current.Game)?.CompleteAllPending();
+
             base.ExposeData();
             Scribe_Values.Look(ref _fireflyEnabled, "fireflyEnabled", true);
             if (Scribe.mode == LoadSaveMode.LoadingVars)

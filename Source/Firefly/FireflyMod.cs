@@ -119,6 +119,12 @@ namespace Firefly
             Settings.MaxPromptChars = Mathf.RoundToInt(
                 listing.Slider(Settings.MaxPromptChars, 4000f, 120000f) / 1000f) * 1000;
 
+            listing.Gap(18f);
+            listing.Label($"Completion size limit: {Settings.MaxCompletionTokens:N0} tokens");
+            listing.Label("Caps how long any single reply (summaries, thread scans, raid narratives, etc.) is allowed to be. Raise it if replies are getting cut off mid-sentence.");
+            Settings.MaxCompletionTokens = Mathf.RoundToInt(
+                listing.Slider(Settings.MaxCompletionTokens, 256f, 8192f) / 64f) * 64;
+
             listing.End();
         }
     }

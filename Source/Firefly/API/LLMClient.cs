@@ -98,11 +98,14 @@ namespace Firefly
             string apiKey  = settings.ApiKey  ?? "";
             string baseUrl = settings.BaseUrl ?? "";
             string model   = settings.Model   ?? "";
+            int maxTokens  = settings.MaxCompletionTokens > 0
+                ? settings.MaxCompletionTokens
+                : FireflySettings.DefaultMaxCompletionTokens;
 
             System.Threading.Interlocked.Increment(ref _pendingCount);
             AdjustLabelPending(label, 1);
             Task.Run(async () => await SendAsync(
-                label, messages, apiKey, baseUrl, model,
+                label, messages, apiKey, baseUrl, model, maxTokens,
                 onSuccess: content => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onSuccess(content); },
                 onError:   err     => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onError(err); }));
         }
@@ -119,7 +122,7 @@ namespace Firefly
             };
             Task.Run(async () => await SendAsync(
                 "TestConnection", messages,
-                apiKey, baseUrl, model,
+                apiKey, baseUrl, model, FireflySettings.DefaultMaxCompletionTokens,
                 response => onResult(true, response.Trim()),
                 error => onResult(false, error)
             ));
@@ -148,6 +151,7 @@ namespace Firefly
             string apiKey,
             string baseUrl,
             string model,
+            int maxTokens,
             Action<string> onSuccess,
             Action<string> onError)
         {
@@ -178,7 +182,7 @@ namespace Firefly
                     {
                         model      = model,
                         messages   = messagePayloads,
-                        max_tokens = 2048
+                        max_tokens = maxTokens
                     });
 
                     using (var request = new HttpRequestMessage(HttpMethod.Post, url)
