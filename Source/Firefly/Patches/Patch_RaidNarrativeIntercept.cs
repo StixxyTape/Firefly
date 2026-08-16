@@ -309,7 +309,11 @@ namespace Firefly
             "mysteries unknown, or is there something more devious afoot here...\n\n" +
             "This stuff takes a hold on whoever eats it. If your enemies - or allies - get word " +
             "about this, you might start seeing some unexpected traffic.\n\n" +
-            "Pick it, sell it, or leave it be. It won't last forever.\"";
+            "Pick it, sell it, or leave it be. It won't last forever.\"\n\n" +
+            "Match the examples above exactly in shape: short, concise, punchy sentences and " +
+            "short paragraphs. Not an overly narrative, sprawling story — a tight piece like " +
+            "the ones shown. Your final answer must be 10 lines or fewer. This is a hard limit, " +
+            "not a suggestion.";
 
         private static string BuildPrompt(PendingRaidNarrative pending)
         {

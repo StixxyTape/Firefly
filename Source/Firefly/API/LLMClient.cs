@@ -101,11 +101,12 @@ namespace Firefly
             int maxTokens  = settings.MaxCompletionTokens > 0
                 ? settings.MaxCompletionTokens
                 : FireflySettings.DefaultMaxCompletionTokens;
+            string reasoningEffort = settings.ReasoningEffort ?? "";
 
             System.Threading.Interlocked.Increment(ref _pendingCount);
             AdjustLabelPending(label, 1);
             Task.Run(async () => await SendAsync(
-                label, messages, apiKey, baseUrl, model, maxTokens,
+                label, messages, apiKey, baseUrl, model, maxTokens, reasoningEffort,
                 onSuccess: content => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onSuccess(content); },
                 onError:   err     => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onError(err); }));
         }
@@ -122,7 +123,7 @@ namespace Firefly
             };
             Task.Run(async () => await SendAsync(
                 "TestConnection", messages,
-                apiKey, baseUrl, model, FireflySettings.DefaultMaxCompletionTokens,
+                apiKey, baseUrl, model, FireflySettings.DefaultMaxCompletionTokens, "",
                 response => onResult(true, response.Trim()),
                 error => onResult(false, error)
             ));
@@ -152,6 +153,7 @@ namespace Firefly
             string baseUrl,
             string model,
             int maxTokens,
+            string reasoningEffort,
             Action<string> onSuccess,
             Action<string> onError)
         {
@@ -178,12 +180,18 @@ namespace Firefly
                     foreach (var m in messages)
                         messagePayloads.Add(new { role = m.Role, content = m.Content });
 
-                    var payload = JsonConvert.SerializeObject(new
+                    // OpenRouter's unified "reasoning" field — only sent when configured, so
+                    // endpoints/models that don't recognize it (non-reasoning models, some
+                    // OpenAI-compatible local servers) just never see the field at all.
+                    var payloadObj = new JObject
                     {
-                        model      = model,
-                        messages   = messagePayloads,
-                        max_tokens = maxTokens
-                    });
+                        ["model"]      = model,
+                        ["messages"]   = JArray.FromObject(messagePayloads),
+                        ["max_tokens"] = maxTokens
+                    };
+                    if (!reasoningEffort.NullOrEmpty())
+                        payloadObj["reasoning"] = new JObject { ["effort"] = reasoningEffort };
+                    var payload = payloadObj.ToString(Newtonsoft.Json.Formatting.None);
 
                     using (var request = new HttpRequestMessage(HttpMethod.Post, url)
                     {
