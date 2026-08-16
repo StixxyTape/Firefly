@@ -253,7 +253,7 @@ namespace Firefly
                 },
                 onError: err =>
                 {
-                    Log.Message($"[Firefly:{RaidNarrativeLabel}] Request {pending.RequestId} failed, falling back to vanilla text: {err}");
+                    Log.Warning($"[Firefly:{RaidNarrativeLabel}] Request {pending.RequestId} failed, falling back to vanilla text: {err}");
                     Complete(pending.RequestId, null);
                 });
         }
