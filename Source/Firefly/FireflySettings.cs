@@ -27,7 +27,7 @@ namespace Firefly
         // non-reasoning models and by endpoints that don't recognize the field.
         public string ReasoningEffort = "";
         // Per-call override of the reasoning effort above, keyed by LLMClient.Send's "label"
-        // (e.g. "ThreadScan", "DailySummary", "RaidNarrative"). A missing key means "inherit
+        // (e.g. "DailyColonyThreadScan", "DailyColonySummary", "RaidNarrative"). A missing key means "inherit
         // ReasoningEffort"; a present key — including "" for an explicit "Model default" —
         // always wins over the global setting for that one call site.
         public Dictionary<string, string> PerLabelReasoningEffort = new Dictionary<string, string>();
@@ -60,6 +60,47 @@ namespace Firefly
                 CustomModelPresets = new List<ModelPreset>();
             if (Scribe.mode == LoadSaveMode.LoadingVars && PerLabelReasoningEffort == null)
                 PerLabelReasoningEffort = new Dictionary<string, string>();
+            if (Scribe.mode == LoadSaveMode.LoadingVars)
+                MigrateRenamedLabelKeys();
+        }
+
+        // One-time migration for the 2026-08-20 label rename — old saved per-call reasoning
+        // overrides were keyed by the pre-rename label strings (e.g. "DailySummary") and would
+        // otherwise silently stop applying (orphaned key, falls back to the global default) once
+        // the call sites started sending their new label strings instead. A value already saved
+        // under the new key wins if both happen to be present; old keys are removed either way so
+        // this doesn't need to run more than once per save.
+        private static readonly Dictionary<string, string> RenamedLabelKeys = new Dictionary<string, string>
+        {
+            { "DailySummary", "DailyColonySummary" },
+            { "ThreadScan", "DailyColonyThreadScan" },
+            { "ArcHistory", "MonthlyColonyArcHistory" },
+            { "JournalChunk", "ThreadFactChunker" },
+            { "JournalSummary", "ThreadSummariser" },
+            { "WorldSeed", "InitialWorldThreadSeeder" },
+            { "WorldOutcome", "DailyWorldProgression" },
+            { "WorldThreadUpdates", "DailyWorldThreadScan" },
+            { "WorldJournalChunk", "WorldThreadFactChunker" },
+            { "WorldJournalSummary", "WorldThreadSummariser" },
+            { "WorldArcHistory", "MonthlyWorldArcHistory" },
+            { "FactionUpdate", "DailyWorldThreadFactionScan" },
+            { "FactionJournalChunk", "FactionNarrativeChunker" },
+            { "FactionJournalSummary", "FactionNarrativeSummariser" },
+            { "FactionFacts", "InitialFactionFactSeeder" },
+            { "DescriptionJournalChunk", "FactionIdentityChunker" },
+            { "DescriptionJournalSummary", "FactionIdentitySummariser" },
+            { "FactionTagline", "FactionTaglineUpdater" },
+        };
+
+        private void MigrateRenamedLabelKeys()
+        {
+            foreach (var kvp in RenamedLabelKeys)
+            {
+                if (!PerLabelReasoningEffort.TryGetValue(kvp.Key, out string oldValue)) continue;
+                if (!PerLabelReasoningEffort.ContainsKey(kvp.Value))
+                    PerLabelReasoningEffort[kvp.Value] = oldValue;
+                PerLabelReasoningEffort.Remove(kvp.Key);
+            }
         }
     }
 }

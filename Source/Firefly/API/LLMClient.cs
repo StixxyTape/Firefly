@@ -86,7 +86,7 @@ namespace Firefly
         }
 
         // label identifies the call in every log line it produces (both here and inside
-        // SendAsync's own retry-attempt warnings) — e.g. "ThreadScan", "DailySummary".
+        // SendAsync's own retry-attempt warnings) — e.g. "DailyColonyThreadScan", "DailyColonySummary".
         // Required, not optional: with several distinct call sites now sharing this one choke
         // point, a generic unlabelled log line is no longer usable for debugging.
         // timeoutSeconds: 0 (the default) means "use the player's Request timeout setting". Every

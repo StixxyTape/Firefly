@@ -20,14 +20,14 @@ namespace Firefly
             public string Title = "";
             public JournalRecord Record = null!;
             public Func<bool> IsActive = null!;
-            public string ChunkRequestLabel = ChunkLabel;
-            public string SummaryRequestLabel = SummaryLabel;
+            public string ChunkRequestLabel = ThreadFactChunkerLabel;
+            public string SummaryRequestLabel = ThreadSummariserLabel;
             public string SummaryPromptOverride;
             public string ChunkPromptOverride;
         }
 
-        public const string ChunkLabel = "JournalChunk";
-        public const string SummaryLabel = "JournalSummary";
+        public const string ThreadFactChunkerLabel = "ThreadFactChunker";
+        public const string ThreadSummariserLabel = "ThreadSummariser";
         private const int ChunkFactThreshold = 30;
         private const int ChunkCharThreshold = 3000;
 
@@ -38,8 +38,8 @@ namespace Firefly
             public Func<bool> IsActive = null!;
             public bool InFlight;
             public bool NeedsAnotherPass;
-            public string ChunkRequestLabel = ChunkLabel;
-            public string SummaryRequestLabel = SummaryLabel;
+            public string ChunkRequestLabel = ThreadFactChunkerLabel;
+            public string SummaryRequestLabel = ThreadSummariserLabel;
             public string SummaryPromptOverride;
             public string ChunkPromptOverride;
         }
@@ -57,7 +57,7 @@ namespace Firefly
         public bool AnyWorking => _work.Values.Any(w => w.InFlight);
 
         public void Enqueue(string key, string title, JournalRecord record, Func<bool> isActive,
-            string chunkLabel = ChunkLabel, string summaryLabel = SummaryLabel,
+            string chunkLabel = ThreadFactChunkerLabel, string summaryLabel = ThreadSummariserLabel,
             string summaryPromptOverride = null, string chunkPromptOverride = null)
         {
             if (key.NullOrEmpty() || record == null || !record.SummaryStale) return;

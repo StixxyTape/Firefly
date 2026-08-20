@@ -73,25 +73,25 @@ namespace Firefly
         private bool _requestInFlight;
         public static bool IsWorldThreadWorking => LLMClient.IsPendingForAny(WorldPendingLabels);
 
-        public const string WorldSeedLabel = "WorldSeed";
-        public const string WorldOutcomeLabel = "WorldOutcome";
-        public const string WorldThreadUpdatesLabel = "WorldThreadUpdates";
-        public const string FactionUpdateLabel = "FactionUpdate";
-        public const string WorldChunkLabel = "WorldJournalChunk";
-        public const string WorldSummaryLabel = "WorldJournalSummary";
-        public const string WorldArcHistoryLabel = "WorldArcHistory";
-        public const string FactionChunkLabel = "FactionJournalChunk";
-        public const string FactionSummaryLabel = "FactionJournalSummary";
-        public const string FactionFactsLabel = "FactionFacts";
-        public const string DescriptionChunkLabel = "DescriptionJournalChunk";
-        public const string DescriptionSummaryLabel = "DescriptionJournalSummary";
-        public const string FactionTaglineLabel = "FactionTagline";
+        public const string InitialWorldThreadSeederLabel = "InitialWorldThreadSeeder";
+        public const string DailyWorldProgressionLabel = "DailyWorldProgression";
+        public const string DailyWorldThreadScanLabel = "DailyWorldThreadScan";
+        public const string DailyWorldThreadFactionScanLabel = "DailyWorldThreadFactionScan";
+        public const string WorldThreadFactChunkerLabel = "WorldThreadFactChunker";
+        public const string WorldThreadSummariserLabel = "WorldThreadSummariser";
+        public const string MonthlyWorldArcHistoryLabel = "MonthlyWorldArcHistory";
+        public const string FactionNarrativeChunkerLabel = "FactionNarrativeChunker";
+        public const string FactionNarrativeSummariserLabel = "FactionNarrativeSummariser";
+        public const string InitialFactionFactSeederLabel = "InitialFactionFactSeeder";
+        public const string FactionIdentityChunkerLabel = "FactionIdentityChunker";
+        public const string FactionIdentitySummariserLabel = "FactionIdentitySummariser";
+        public const string FactionTaglineUpdaterLabel = "FactionTaglineUpdater";
         public static readonly string[] WorldPendingLabels =
-            { WorldSeedLabel, WorldOutcomeLabel, WorldThreadUpdatesLabel, WorldChunkLabel, WorldSummaryLabel,
-                WorldArcHistoryLabel };
+            { InitialWorldThreadSeederLabel, DailyWorldProgressionLabel, DailyWorldThreadScanLabel, WorldThreadFactChunkerLabel, WorldThreadSummariserLabel,
+                MonthlyWorldArcHistoryLabel };
         public static readonly string[] FactionPendingLabels =
-            { FactionFactsLabel, FactionUpdateLabel, FactionChunkLabel, FactionSummaryLabel,
-                DescriptionChunkLabel, DescriptionSummaryLabel, FactionTaglineLabel };
+            { InitialFactionFactSeederLabel, DailyWorldThreadFactionScanLabel, FactionNarrativeChunkerLabel, FactionNarrativeSummariserLabel,
+                FactionIdentityChunkerLabel, FactionIdentitySummariserLabel, FactionTaglineUpdaterLabel };
 
         private readonly HashSet<string> _factionFactsInFlight = new HashSet<string>();
         private readonly HashSet<string> _factionTaglinesInFlight = new HashSet<string>();
@@ -330,7 +330,7 @@ namespace Firefly
             if (missing.Count == 0) return;
             const int batchSize = 2;
             int batchCount = (missing.Count + batchSize - 1) / batchSize;
-            Log.Message($"[Firefly:{FactionFactsLabel}] Dispatching {batchCount} batch(es) for {missing.Count} faction(s): " +
+            Log.Message($"[Firefly:{InitialFactionFactSeederLabel}] Dispatching {batchCount} batch(es) for {missing.Count} faction(s): " +
                 string.Join(", ", missing.Select(f => f.Key)));
             for (int i = 0; i < missing.Count; i += batchSize)
                 RequestFactionFacts(missing.Skip(i).Take(batchSize).ToList());
@@ -361,7 +361,7 @@ namespace Firefly
                 if (!IsStillActive()) return;
                 if (!success)
                 {
-                    Log.Warning($"[Firefly:{DescriptionSummaryLabel}] Bootstrap failed for " +
+                    Log.Warning($"[Firefly:{FactionIdentitySummariserLabel}] Bootstrap failed for " +
                         $"[{string.Join(", ", keys)}]. Will retry next load.");
                     return;
                 }
@@ -392,8 +392,8 @@ namespace Firefly
         private void RequestSeedThreads()
         {
             _requestInFlight = true;
-            Log.Message($"[Firefly:{WorldSeedLabel}] Sending...");
-            LLMClient.Send(WorldSeedLabel, WorldThreadScanIngest.SeedSystemPrompt,
+            Log.Message($"[Firefly:{InitialWorldThreadSeederLabel}] Sending...");
+            LLMClient.Send(InitialWorldThreadSeederLabel, WorldThreadScanIngest.SeedSystemPrompt,
                 WorldThreadScanIngest.BuildFactionContextBlock(this),
                 onSuccess: rawJson =>
                 {
@@ -422,7 +422,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _requestInFlight = false;
-                    Log.Warning($"[Firefly:{WorldSeedLabel}] Failed: {err}. Will retry next load.");
+                    Log.Warning($"[Firefly:{InitialWorldThreadSeederLabel}] Failed: {err}. Will retry next load.");
                 });
         }
 
@@ -471,8 +471,8 @@ namespace Firefly
         private void RequestWorldOutcome(PendingWorldWork work)
         {
             _requestInFlight = true;
-            Log.Message($"[Firefly:{WorldOutcomeLabel}] Sending for Day {work.Day}...");
-            LLMClient.Send(WorldOutcomeLabel, WorldThreadScanIngest.WorldOutcomeSystemPrompt,
+            Log.Message($"[Firefly:{DailyWorldProgressionLabel}] Sending for Day {work.Day}...");
+            LLMClient.Send(DailyWorldProgressionLabel, WorldThreadScanIngest.WorldOutcomeSystemPrompt,
                 WorldThreadScanIngest.BuildWorldOutcomePrompt(this, work.ColonySummary),
                 onSuccess: rawJson =>
                 {
@@ -489,7 +489,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _requestInFlight = false;
-                    Log.Warning($"[Firefly:{WorldOutcomeLabel}] Failed for Day {work.Day}: {err}");
+                    Log.Warning($"[Firefly:{DailyWorldProgressionLabel}] Failed for Day {work.Day}: {err}");
                 });
         }
 
@@ -497,15 +497,15 @@ namespace Firefly
         {
             if (work.WorldOutcome.NullOrEmpty())
             {
-                Log.Warning($"[Firefly:{WorldThreadUpdatesLabel}] Day {work.Day} has no persisted world outcome; restarting that stage.");
+                Log.Warning($"[Firefly:{DailyWorldThreadScanLabel}] Day {work.Day} has no persisted world outcome; restarting that stage.");
                 work.Stage = WorldWorkStage.WorldOutcome;
                 TryResumeWorldWork();
                 return;
             }
 
             _requestInFlight = true;
-            Log.Message($"[Firefly:{WorldThreadUpdatesLabel}] Sending for Day {work.Day}...");
-            LLMClient.Send(WorldThreadUpdatesLabel, WorldThreadScanIngest.WorldThreadUpdatesSystemPrompt,
+            Log.Message($"[Firefly:{DailyWorldThreadScanLabel}] Sending for Day {work.Day}...");
+            LLMClient.Send(DailyWorldThreadScanLabel, WorldThreadScanIngest.WorldThreadUpdatesSystemPrompt,
                 WorldThreadScanIngest.BuildWorldThreadUpdatesPrompt(this, work.WorldOutcome),
                 onSuccess: rawJson =>
                 {
@@ -521,15 +521,15 @@ namespace Firefly
                 onError: err =>
                 {
                     _requestInFlight = false;
-                    Log.Warning($"[Firefly:{WorldThreadUpdatesLabel}] Failed for Day {work.Day}: {err}");
+                    Log.Warning($"[Firefly:{DailyWorldThreadScanLabel}] Failed for Day {work.Day}: {err}");
                 });
         }
 
         private void RequestFactionUpdate(PendingWorldWork work)
         {
             _requestInFlight = true;
-            Log.Message($"[Firefly:{FactionUpdateLabel}] Sending for Day {work.Day}...");
-            LLMClient.Send(FactionUpdateLabel, WorldThreadScanIngest.FactionUpdateSystemPrompt,
+            Log.Message($"[Firefly:{DailyWorldThreadFactionScanLabel}] Sending for Day {work.Day}...");
+            LLMClient.Send(DailyWorldThreadFactionScanLabel, WorldThreadScanIngest.FactionUpdateSystemPrompt,
                 WorldThreadScanIngest.BuildFactionUpdatePrompt(this, work.TouchedWorldThreadIds),
                 onSuccess: rawJson =>
                 {
@@ -546,7 +546,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _requestInFlight = false;
-                    Log.Warning($"[Firefly:{FactionUpdateLabel}] Failed for Day {work.Day}: {err}");
+                    Log.Warning($"[Firefly:{DailyWorldThreadFactionScanLabel}] Failed for Day {work.Day}: {err}");
                 });
         }
 
@@ -639,8 +639,8 @@ namespace Firefly
             }
 
             _requestInFlight = true;
-            Log.Message($"[Firefly:{WorldArcHistoryLabel}] Sending... (through Day {throughDay})");
-            LLMClient.Send(WorldArcHistoryLabel, WorldThreadScanIngest.WorldArcHistorySystemPrompt, sb.ToString(),
+            Log.Message($"[Firefly:{MonthlyWorldArcHistoryLabel}] Sending... (through Day {throughDay})");
+            LLMClient.Send(MonthlyWorldArcHistoryLabel, WorldThreadScanIngest.WorldArcHistorySystemPrompt, sb.ToString(),
                 onSuccess: arcText =>
                 {
                     if (!IsStillActive() || !_pendingWorldWork.Contains(work)) { _requestInFlight = false; return true; }
@@ -655,7 +655,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _requestInFlight = false;
-                    Log.Warning($"[Firefly:{WorldArcHistoryLabel}] Failed through Day {throughDay}: {err}");
+                    Log.Warning($"[Firefly:{MonthlyWorldArcHistoryLabel}] Failed through Day {throughDay}: {err}");
                 });
         }
 
@@ -667,8 +667,8 @@ namespace Firefly
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (keys.Count == 0 || keys.Any(key => _factionFactsInFlight.Contains(key))) return;
             foreach (string key in keys) _factionFactsInFlight.Add(key);
-            Log.Message($"[Firefly:{FactionFactsLabel}] Sending for [{string.Join(", ", keys)}]...");
-            LLMClient.Send(FactionFactsLabel, WorldThreadScanIngest.FactionFactsSystemPrompt,
+            Log.Message($"[Firefly:{InitialFactionFactSeederLabel}] Sending for [{string.Join(", ", keys)}]...");
+            LLMClient.Send(InitialFactionFactSeederLabel, WorldThreadScanIngest.FactionFactsSystemPrompt,
                 WorldThreadScanIngest.BuildFactionFactsPrompt(batch),
                 onSuccess: rawJson =>
                 {
@@ -691,7 +691,7 @@ namespace Firefly
                         !_factionSnapshots.Any(f => string.Equals(f.Key, key, StringComparison.OrdinalIgnoreCase) &&
                             f.FactionJournal.Facts.Count > 0)).ToList();
                     if (missing.Count > 0)
-                        Log.Warning($"[Firefly:{FactionFactsLabel}] Response omitted {string.Join(", ", missing)}. Will retry next load.");
+                        Log.Warning($"[Firefly:{InitialFactionFactSeederLabel}] Response omitted {string.Join(", ", missing)}. Will retry next load.");
                     RequestMissingFactionDescriptions();
                     RequestMissingFactionTaglines();
                     BootstrapIfNeeded();
@@ -700,7 +700,7 @@ namespace Firefly
                 onError: err =>
                 {
                     foreach (string key in keys) _factionFactsInFlight.Remove(key);
-                    Log.Warning($"[Firefly:{FactionFactsLabel}] Failed for {string.Join(", ", keys)}: {err}. Will retry next load.");
+                    Log.Warning($"[Firefly:{InitialFactionFactSeederLabel}] Failed for {string.Join(", ", keys)}: {err}. Will retry next load.");
                 });
         }
 
@@ -723,8 +723,8 @@ namespace Firefly
             {
                 [faction.Key] = faction.FactionJournal.FactRevision,
             };
-            Log.Message($"[Firefly:{FactionTaglineLabel}] Sending bootstrap for {faction.Key}...");
-            LLMClient.Send(FactionTaglineLabel, WorldThreadScanIngest.FactionTaglineSystemPrompt,
+            Log.Message($"[Firefly:{FactionTaglineUpdaterLabel}] Sending bootstrap for {faction.Key}...");
+            LLMClient.Send(FactionTaglineUpdaterLabel, WorldThreadScanIngest.FactionTaglineSystemPrompt,
                 WorldThreadScanIngest.BuildFactionTaglinePrompt(target),
                 onSuccess: rawJson =>
                 {
@@ -743,7 +743,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _factionTaglinesInFlight.Remove(faction.Key);
-                    Log.Warning($"[Firefly:{FactionTaglineLabel}] Bootstrap failed for " +
+                    Log.Warning($"[Firefly:{FactionTaglineUpdaterLabel}] Bootstrap failed for " +
                         $"{faction.Key}: {err}. Will retry next load.");
                 });
         }
@@ -777,7 +777,7 @@ namespace Firefly
                 if (!IsStillActive() || !_pendingWorldWork.Contains(work)) return;
                 if (!allSucceeded)
                 {
-                    Log.Warning($"[Firefly:{FactionTaglineLabel}] One or more factions failed for Day {work.Day}; retrying this stage next resume.");
+                    Log.Warning($"[Firefly:{FactionTaglineUpdaterLabel}] One or more factions failed for Day {work.Day}; retrying this stage next resume.");
                     return;
                 }
                 AdvanceToWorldArcHistory(work);
@@ -794,8 +794,8 @@ namespace Firefly
                 {
                     [faction.Key] = faction.FactionJournal.FactRevision,
                 };
-                Log.Message($"[Firefly:{FactionTaglineLabel}] Sending for Day {work.Day}, {faction.Key}...");
-                LLMClient.Send(FactionTaglineLabel, WorldThreadScanIngest.FactionTaglineSystemPrompt,
+                Log.Message($"[Firefly:{FactionTaglineUpdaterLabel}] Sending for Day {work.Day}, {faction.Key}...");
+                LLMClient.Send(FactionTaglineUpdaterLabel, WorldThreadScanIngest.FactionTaglineSystemPrompt,
                     WorldThreadScanIngest.BuildFactionTaglinePrompt(target),
                     onSuccess: rawJson =>
                     {
@@ -808,7 +808,7 @@ namespace Firefly
                     onError: err =>
                     {
                         allSucceeded = false;
-                        Log.Warning($"[Firefly:{FactionTaglineLabel}] Failed for Day {work.Day} " +
+                        Log.Warning($"[Firefly:{FactionTaglineUpdaterLabel}] Failed for Day {work.Day} " +
                             $"faction {faction.Key}: {err}");
                         SettleOne();
                     });

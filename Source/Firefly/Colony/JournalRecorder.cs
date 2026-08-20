@@ -342,23 +342,23 @@ namespace Firefly
         // Public: MainTabWindow_Journal reads these to know which nav tab to highlight while a
         // given call is in flight — Colony for anything that writes daily/colony-level prose,
         // Threads for the single day-end thread scan.
-        public const string DailySummaryLabel    = "DailySummary";
-        public const string ThreadScanLabel      = "ThreadScan";
-        public const string ArcHistoryLabel      = "ArcHistory";
+        public const string DailyColonySummaryLabel    = "DailyColonySummary";
+        public const string DailyColonyThreadScanLabel      = "DailyColonyThreadScan";
+        public const string MonthlyColonyArcHistoryLabel      = "MonthlyColonyArcHistory";
 
         // Backfill (catching up a day that never got summarised) reuses SendSummaryRequest
         // directly rather than its own label — it's the same call for the same purpose, just
         // triggered for a past day instead of the one that just closed.
-        public static readonly string[] ColonyPendingLabels  = { DailySummaryLabel, ArcHistoryLabel };
+        public static readonly string[] ColonyPendingLabels  = { DailyColonySummaryLabel, MonthlyColonyArcHistoryLabel };
         public static readonly string[] ThreadsPendingLabels =
-            { ThreadScanLabel, JournalSummaryService.ChunkLabel, JournalSummaryService.SummaryLabel };
+            { DailyColonyThreadScanLabel, JournalSummaryService.ThreadFactChunkerLabel, JournalSummaryService.ThreadSummariserLabel };
 
         // onDone fires after the request settles either way (success or failure) — used by the
         // backfill queue below to chain to the next missing day without its own LLMClient.Send
         // call. Ordinary same-day calls just leave it null.
         private void SendSummaryRequest(int day, string content, Action onDone = null)
         {
-            Log.Message($"[Firefly:{DailySummaryLabel}] Sending Day {day}...");
+            Log.Message($"[Firefly:{DailyColonySummaryLabel}] Sending Day {day}...");
 
             string prevSummary = _ledger?.PastDays
                 .LastOrDefault(d => d.Day == day - 1 && !d.Summary.NullOrEmpty())
@@ -369,12 +369,12 @@ namespace Firefly
                 : $"=== PREVIOUS DAY SUMMARY (context only — do not summarise this) ===\n{prevSummary.Trim()}\n\n{content}";
 
             LLMClient.Send(
-                DailySummaryLabel,
+                DailyColonySummaryLabel,
                 DailySystemPrompt(),
                 prompt,
                 onSuccess: summary =>
                 {
-                    Log.Message($"[Firefly:{DailySummaryLabel}] Responded for Day {day}: {summary}");
+                    Log.Message($"[Firefly:{DailyColonySummaryLabel}] Responded for Day {day}: {summary}");
                     if (!IsStillActive) { onDone?.Invoke(); return true; }
                     if (summary.NullOrEmpty()) return false; // empty reply — worth another attempt
                     // Write through the ledger instance this request was made for, not
@@ -388,7 +388,7 @@ namespace Firefly
                 },
                 onError: err =>
                 {
-                    Log.Warning($"[Firefly:{DailySummaryLabel}] Failed for Day {day}: {err}");
+                    Log.Warning($"[Firefly:{DailyColonySummaryLabel}] Failed for Day {day}: {err}");
                     onDone?.Invoke();
                 });
         }
@@ -446,14 +446,14 @@ namespace Firefly
                 (threadContext.NullOrEmpty() ? "(none)" : threadContext.Trim()) +
                 "\n\n=== TODAY'S COLONY RECORD ===\n" + content;
 
-            Log.Message($"[Firefly:{ThreadScanLabel}] Sending...");
+            Log.Message($"[Firefly:{DailyColonyThreadScanLabel}] Sending...");
             LLMClient.Send(
-                ThreadScanLabel,
+                DailyColonyThreadScanLabel,
                 ThreadScanSystemPrompt,
                 prompt,
                 onSuccess: rawJson =>
                 {
-                    Log.Message($"[Firefly:{ThreadScanLabel}] Responded: {rawJson}");
+                    Log.Message($"[Firefly:{DailyColonyThreadScanLabel}] Responded: {rawJson}");
                     if (!IsStillActive) return true;
 
                     List<string> touchedExisting;
@@ -465,7 +465,7 @@ namespace Firefly
                     {
                         // A code-level failure applying otherwise-valid JSON — retrying sends the
                         // same broken input into the same code path, so don't.
-                        Log.Warning($"[Firefly:{ThreadScanLabel}] Ingest failed: {e.Message}");
+                        Log.Warning($"[Firefly:{DailyColonyThreadScanLabel}] Ingest failed: {e.Message}");
                         return true;
                     }
 
@@ -478,7 +478,7 @@ namespace Firefly
                 onError: err =>
                 {
                     _activeThreadScanDay = null;
-                    Log.Warning($"[Firefly:{ThreadScanLabel}] Failed: {err}. It will be retried after reload.");
+                    Log.Warning($"[Firefly:{DailyColonyThreadScanLabel}] Failed: {err}. It will be retried after reload.");
                     StartNextPendingThreadScan();
                 });
         }
@@ -512,8 +512,8 @@ namespace Firefly
                     Key = "world:" + t.Id,
                     Title = t.Title,
                     Record = t.Journal,
-                    ChunkRequestLabel = FireflyWorldComponent.WorldChunkLabel,
-                    SummaryRequestLabel = FireflyWorldComponent.WorldSummaryLabel,
+                    ChunkRequestLabel = FireflyWorldComponent.WorldThreadFactChunkerLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.WorldThreadSummariserLabel,
                     // World Threads and the Faction Narrative pair share a summary prompt distinct
                     // from Story Threads (which stay on the plain default) and from Description —
                     // but the chunker itself stays shared across all three, no override here.
@@ -535,8 +535,8 @@ namespace Firefly
                     Key = "faction-narrative:" + f.Key,
                     Title = f.FactionName,
                     Record = f.NarrativeJournal,
-                    ChunkRequestLabel = FireflyWorldComponent.FactionChunkLabel,
-                    SummaryRequestLabel = FireflyWorldComponent.FactionSummaryLabel,
+                    ChunkRequestLabel = FireflyWorldComponent.FactionNarrativeChunkerLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.FactionNarrativeSummariserLabel,
                     SummaryPromptOverride = JournalSummaryService.NarrativeSummaryPrompt,
                     IsActive = () => IsStillActive && ReferenceEquals(FireflyWorldComponent.Current, world) &&
                         world.FactionSnapshots.Contains(f),
@@ -555,8 +555,8 @@ namespace Firefly
                     Key = "faction-description:" + f.Key,
                     Title = f.FactionName,
                     Record = f.FactionJournal,
-                    ChunkRequestLabel = FireflyWorldComponent.DescriptionChunkLabel,
-                    SummaryRequestLabel = FireflyWorldComponent.DescriptionSummaryLabel,
+                    ChunkRequestLabel = FireflyWorldComponent.FactionIdentityChunkerLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.FactionIdentitySummariserLabel,
                     // Description is a settled identity portrait, not an unfolding plot — the
                     // shared story-shaped prompt's "developments in order"/"unresolved stakes"
                     // framing doesn't fit, so this uses its own dedicated prompt pair.
@@ -639,17 +639,17 @@ namespace Firefly
                 string combined = sb.ToString();
                 if (combined.NullOrEmpty()) return;
 
-                Log.Message($"[Firefly:{ArcHistoryLabel}] Sending... (through Day {day})");
+                Log.Message($"[Firefly:{MonthlyColonyArcHistoryLabel}] Sending... (through Day {day})");
                 _arcInFlight = true;
                 LLMClient.Send(
-                    ArcHistoryLabel,
+                    MonthlyColonyArcHistoryLabel,
                     ArcSystemPrompt,
                     combined,
                     onSuccess: arcText =>
                     {
                         if (!IsStillActive) { _arcInFlight = false; return true; }
                         if (arcText.NullOrEmpty()) return false; // empty reply — worth another attempt
-                        Log.Message($"[Firefly:{ArcHistoryLabel}] Responded (through Day {day}): {arcText}");
+                        Log.Message($"[Firefly:{MonthlyColonyArcHistoryLabel}] Responded (through Day {day}): {arcText}");
                         _arcInFlight = false;
                         _ledger?.SetColonyHistory(arcText, day);
                         return true;
@@ -657,13 +657,13 @@ namespace Firefly
                     onError: err =>
                     {
                         _arcInFlight = false;
-                        Log.Warning($"[Firefly:{ArcHistoryLabel}] Failed (through Day {day}): {err}");
+                        Log.Warning($"[Firefly:{MonthlyColonyArcHistoryLabel}] Failed (through Day {day}): {err}");
                     });
             }
             catch (Exception e)
             {
                 _arcInFlight = false;
-                Log.Warning($"[Firefly:{ArcHistoryLabel}] SendArcSummaryRequest failed: {e.Message}");
+                Log.Warning($"[Firefly:{MonthlyColonyArcHistoryLabel}] SendArcSummaryRequest failed: {e.Message}");
             }
         }
 
@@ -686,7 +686,7 @@ namespace Firefly
             _backfillQueue.Clear();
             foreach (var record in pending) _backfillQueue.Enqueue(record);
 
-            Log.Message($"[Firefly:{DailySummaryLabel}] Backfilling {_backfillQueue.Count} missing summaries, one at a time...");
+            Log.Message($"[Firefly:{DailyColonySummaryLabel}] Backfilling {_backfillQueue.Count} missing summaries, one at a time...");
             _backfillActive = true;
             ProcessBackfillQueue();
         }
@@ -715,7 +715,7 @@ namespace Firefly
             }
 
             var record = _backfillQueue.Dequeue();
-            Log.Message($"[Firefly:{DailySummaryLabel}] Backfilling Day {record.Day} ({_backfillQueue.Count} remaining)...");
+            Log.Message($"[Firefly:{DailyColonySummaryLabel}] Backfilling Day {record.Day} ({_backfillQueue.Count} remaining)...");
             // Same call, same label, as an ordinary same-day summary — just for a day that got
             // missed. onDone chains to the next queued day once this one settles, one at a time,
             // so a stale in-flight request can't chain further calls after the entry guard above
