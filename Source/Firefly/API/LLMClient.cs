@@ -258,16 +258,34 @@ namespace Firefly
                                 int code = (int)response.StatusCode;
                                 lastError = $"HTTP {code}: {Truncate(body, maxErrorChars)}";
                                 LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                LogFullResponseOnMainThread(label, attempt, maxAttempts, body);
                                 // Bad key, bad model, bad request — retrying changes nothing. Only 429 is worth another try.
                                 if (code >= 400 && code < 500 && code != 429) break;
                                 continue;
                             }
 
-                            var content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
+                            string content;
+                            try
+                            {
+                                content = JObject.Parse(body)?["choices"]?[0]?["message"]?["content"]?.Value<string>();
+                            }
+                            catch (JsonException)
+                            {
+                                // A 200 that isn't actually valid JSON (a gateway's HTML error page,
+                                // a truncated body, etc.) — without this, JObject.Parse's exception
+                                // would fall through to the generic catch below, which logs the
+                                // exception message instead of the response body, losing exactly
+                                // the text we most need to see.
+                                lastError = "Malformed response — body is not valid JSON.";
+                                LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                LogFullResponseOnMainThread(label, attempt, maxAttempts, body);
+                                continue;
+                            }
                             if (content == null)
                             {
                                 lastError = "Malformed response — no content field in reply.";
                                 LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
+                                LogFullResponseOnMainThread(label, attempt, maxAttempts, body);
                                 continue;
                             }
 
@@ -301,6 +319,7 @@ namespace Firefly
 
                             lastError = "Response received but failed validation.";
                             LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} response was invalid; retrying.");
+                            LogFullResponseOnMainThread(label, attempt, maxAttempts, content);
                             continue;
                         }
                     }
@@ -328,6 +347,17 @@ namespace Firefly
         // MainThreadQueue everything else in this method already uses for callbacks.
         private static void LogWarningOnMainThread(string message) =>
             MainThreadQueue.Enqueue(() => Log.Warning(message));
+
+        // Companion to the (truncated, maxErrorChars-bounded) warning line above — logs the
+        // complete, untruncated text tied to a failed attempt as a separate Log.Message so
+        // debugging a bad prompt/response doesn't depend on widening maxErrorChars. Deliberately
+        // Log.Message, not Log.Warning: this can be arbitrarily long (a full HTTP body or a full
+        // model reply) and isn't itself the "something's wrong" signal — the warning line already
+        // covers that; this is just the detail behind it, once for every failed attempt (not only
+        // the final one), same granularity as the warning it accompanies.
+        private static void LogFullResponseOnMainThread(string label, int attempt, int maxAttempts, string text) =>
+            MainThreadQueue.Enqueue(() =>
+                Log.Message($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} full response:\n{text}"));
 
         private static string Truncate(string text, int maxChars)
         {
