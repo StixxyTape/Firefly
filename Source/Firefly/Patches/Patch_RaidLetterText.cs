@@ -13,23 +13,31 @@ namespace Firefly
     {
         static void Postfix(IncidentParms parms, List<Pawn> pawns, ref string __result)
         {
+            __result = Apply(parms, pawns, __result);
+        }
+
+        // Shared with Patch_RaidNarrativeIntercept, which calls this directly — Harmony reverse
+        // patches copy only the target method's original IL, so this postfix never fires for text
+        // obtained that way. One implementation, two call sites.
+        public static string Apply(IncidentParms parms, List<Pawn> pawns, string text)
+        {
             try
             {
-                if (pawns?.Count != 1 || __result.NullOrEmpty()) return;
+                if (pawns?.Count != 1 || text.NullOrEmpty()) return text;
 
                 Pawn pawn = pawns[0];
-                if (pawn == null) return;
+                if (pawn == null) return text;
                 string raider = ColonyLedger.StripTags(pawn.kindDef?.label ?? "");
                 string faction = ColonyLedger.StripTags(parms?.faction?.Name ?? pawn.Faction?.Name ?? "");
-                if (raider.NullOrEmpty() || faction.NullOrEmpty()) return;
+                if (raider.NullOrEmpty() || faction.NullOrEmpty()) return text;
 
-                int sentenceEnd = __result.IndexOf('.');
-                if (sentenceEnd < 0) return;
+                int sentenceEnd = text.IndexOf('.');
+                if (sentenceEnd < 0) return text;
 
                 string opening = $"A single {raider} from {faction} has arrived nearby.";
-                __result = opening + __result.Substring(sentenceEnd + 1);
+                return opening + text.Substring(sentenceEnd + 1);
             }
-            catch { }
+            catch { return text; }
         }
     }
 }

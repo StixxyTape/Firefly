@@ -227,7 +227,9 @@ namespace Firefly
         // Narrative request
         // ------------------------------------------------------------------
 
-        private const string RaidNarrativeLabel = "RaidNarrative";
+        // Public so FireflyMod's settings UI can offer a per-call reasoning-effort override
+        // for this label without duplicating the string.
+        public const string RaidNarrativeLabel = "RaidNarrative";
 
         private static void RequestNarrative(PendingRaidNarrative pending)
         {
@@ -250,6 +252,7 @@ namespace Firefly
                 {
                     Log.Message($"[Firefly:{RaidNarrativeLabel}] Responded for request {pending.RequestId}: {text}");
                     Complete(pending.RequestId, text);
+                    return true;
                 },
                 onError: err =>
                 {
@@ -325,7 +328,7 @@ namespace Firefly
                 foreach (var t in threads)
                 {
                     sb.AppendLine($"--- {t.Name} ---");
-                    sb.AppendLine(t.Description);
+                    sb.AppendLine(t.ActiveSummary);
 
                     // Same shape as JournalRecorder's own thread-summary prompt: permanent
                     // condensed history first, then whatever facts haven't been folded into a
@@ -456,23 +459,8 @@ namespace Firefly
         // (fixes vanilla always using the plural raider noun for a single-pawn raid). Reapply the
         // same fix manually everywhere this file calls the reverse-patched GetLetterText, so a
         // single-pawn raid's text stays correct whether or not Fillion's rewrite is in play.
-        private static string ApplySingularRaiderFix(IncidentParms parms, List<Pawn> pawns, string text)
-        {
-            try
-            {
-                if (pawns?.Count != 1 || text.NullOrEmpty()) return text;
-                Pawn pawn = pawns[0];
-                if (pawn == null) return text;
-                string raider = ColonyLedger.StripTags(pawn.kindDef?.label ?? "");
-                string faction = ColonyLedger.StripTags(parms?.faction?.Name ?? pawn.Faction?.Name ?? "");
-                if (raider.NullOrEmpty() || faction.NullOrEmpty()) return text;
-                int sentenceEnd = text.IndexOf('.');
-                if (sentenceEnd < 0) return text;
-                string opening = $"A single {raider} from {faction} has arrived nearby.";
-                return opening + text.Substring(sentenceEnd + 1);
-            }
-            catch { return text; }
-        }
+        private static string ApplySingularRaiderFix(IncidentParms parms, List<Pawn> pawns, string text) =>
+            Patch_RaidLetterText.Apply(parms, pawns, text);
 
         private static void DiscardPawns(List<Pawn> pawns)
         {

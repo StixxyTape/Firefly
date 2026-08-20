@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using HarmonyLib;
@@ -23,7 +24,8 @@ namespace Firefly
         {
             var sb = new StringBuilder();
             sb.Append(HealthPct);
-            sb.Append($"|B:{BleedRatePct}:{HoursUntilDeath:F1}");
+            sb.Append("|B:").Append(BleedRatePct).Append(':')
+                .Append(HoursUntilDeath.ToString("F1", CultureInfo.InvariantCulture));
             foreach (var i in Injuries)    sb.Append($"|I:{Esc(i.Source)}:{i.Pct}");
             foreach (var d in Diseases)    sb.Append($"|D:{Esc(d.Label)}:{d.InfPct}:{d.ImmPct}:{Esc(d.SevLabel)}:{(d.Lethal ? 1 : 0)}");
             foreach (var o in Other)       sb.Append($"|O:{Esc(o.Label)}:{o.SevPct}:{Esc(o.SevLabel)}");
@@ -48,8 +50,8 @@ namespace Firefly
                         if (f.Length >= 2 && int.TryParse(f[0], out int br))
                         {
                             snap.BleedRatePct = br;
-                            if (float.TryParse(f[1], System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out float hud))
+                            if (float.TryParse(f[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float hud) ||
+                                float.TryParse(f[1], NumberStyles.Float, CultureInfo.CurrentCulture, out hud))
                                 snap.HoursUntilDeath = hud;
                         }
                         break;

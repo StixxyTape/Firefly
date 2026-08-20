@@ -29,9 +29,13 @@ namespace Firefly
                 var things = _capturedThings;
                 if (things == null || things.Count == 0) return;
 
+                // Plain g.Key.label was always the def's singular form regardless of how many
+                // actually dropped — 12 gravlite panels crashing down got recorded as "some
+                // gravlite panel", which read like a single stray item to the LLM instead of a
+                // real haul. Pluralize against the real summed stack count instead.
                 var labels = things
                     .GroupBy(t => t.def)
-                    .Select(g => g.Key.label)
+                    .Select(g => Find.ActiveLanguageWorker.Pluralize(g.Key.label, g.Sum(t => t.stackCount)))
                     .ToList();
 
                 string contents = labels.Count == 1

@@ -53,6 +53,18 @@ namespace Firefly
             Recorder.Tick();
         }
 
+        // Ticks stop advancing while the game is paused, but a background LLM request can still
+        // be sitting mid-attempt with its queued main-thread callback waiting to run (in
+        // particular, LLMClient's retry-on-invalid-content bridge genuinely awaits that callback
+        // before deciding whether to retry) — without this, that wait would hang for however long
+        // the player leaves the game paused. GameComponentUpdate runs every frame regardless of
+        // pause state, so drain here too; Drain() is a cheap no-op when nothing is queued, so
+        // calling it from both hooks isn't wasteful.
+        public override void GameComponentUpdate()
+        {
+            MainThreadQueue.Drain();
+        }
+
         public override void ExposeData()
         {
             // A pending raid's pawns aren't spawned or saved anywhere — the storyteller already

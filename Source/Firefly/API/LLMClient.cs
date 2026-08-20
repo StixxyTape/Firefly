@@ -25,7 +25,18 @@ namespace Firefly
 
     public static class LLMClient
     {
-        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        // TEMPORARY kill switch — flip back to true to disable again. While true, Send() never makes
+        // a request (onError fires immediately instead); TestConnection is left working since
+        // that's an explicit, deliberate user action, not part of the narrative pipeline.
+        public const bool CallsDisabled = false;
+
+        // The client-level Timeout is a hard ceiling every request is bound by no matter what —
+        // .NET links it with any per-request CancellationToken and whichever fires first wins, so
+        // it must be at least as long as the longest per-call timeoutSeconds anyone passes to
+        // Send() (currently the world-seed call's 180s). Each individual call still gets its own
+        // shorter effective timeout via the CancellationTokenSource created per attempt in
+        // SendAsync — this ceiling is not itself the default.
+        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(240) };
 
         // Counts real narrative requests only (Send, not TestConnection) — drives the "Fillion is
         // writing" UI indicator and the quit-warning patches. Incremented synchronously on the main
@@ -60,7 +71,9 @@ namespace Firefly
             lock (_pendingByLabelLock)
             {
                 _pendingByLabel.TryGetValue(label, out int count);
-                _pendingByLabel[label] = count + delta;
+                int next = count + delta;
+                if (next > 0) _pendingByLabel[label] = next;
+                else _pendingByLabel.Remove(label);
             }
         }
 
@@ -76,16 +89,32 @@ namespace Firefly
         // SendAsync's own retry-attempt warnings) — e.g. "ThreadScan", "DailySummary".
         // Required, not optional: with several distinct call sites now sharing this one choke
         // point, a generic unlabelled log line is no longer usable for debugging.
+        // timeoutSeconds: 0 (the default) means "use the player's Request timeout setting". Every
+        // call site defers to it — none of them pass an explicit override anymore.
+        //
+        // onSuccess returns whether the content was actually valid and accepted (true) or should
+        // be treated as a failed attempt and retried (false) — see the retry-on-invalid-content
+        // comment in SendAsync. Every call site's success handler must return this honestly rather
+        // than always returning true, or a malformed reply silently gets treated as accepted.
         public static void Send(
             string label,
             string systemPrompt,
             string userPrompt,
-            Action<string> onSuccess,
-            Action<string> onError)
+            Func<string, bool> onSuccess,
+            Action<string> onError,
+            int timeoutSeconds = 0)
         {
+            if (CallsDisabled)
+            {
+                Log.Message($"[Firefly:{label}] LLM calls are temporarily disabled — request skipped.");
+                onError("LLM calls are temporarily disabled.");
+                return;
+            }
+
             // Single choke point for every narrative request — max_tokens caps the reply, not the
             // prompt, and a raid-heavy day produces a log far larger than most context windows.
             var settings = FireflyMod.Settings;
+            if (timeoutSeconds <= 0) timeoutSeconds = settings.RequestTimeoutSeconds;
             userPrompt = TruncateForPrompt(label, userPrompt, settings.MaxPromptChars);
 
             var messages = new List<ChatMessage>
@@ -101,14 +130,23 @@ namespace Firefly
             int maxTokens  = settings.MaxCompletionTokens > 0
                 ? settings.MaxCompletionTokens
                 : FireflySettings.DefaultMaxCompletionTokens;
-            string reasoningEffort = settings.ReasoningEffort ?? "";
+            // A per-label override always wins over the global default when present — even an
+            // explicit "" (Model default) override, which is why this checks TryGetValue rather
+            // than falling through on an empty string.
+            string reasoningEffort = settings.PerLabelReasoningEffort != null
+                    && settings.PerLabelReasoningEffort.TryGetValue(label, out var labelReasoningEffort)
+                ? labelReasoningEffort ?? ""
+                : settings.ReasoningEffort ?? "";
+            int maxAttempts = Math.Max(1, settings.MaxRetries + 1);
 
+            // Pending-count bookkeeping lives inside SendAsync itself now, not a wrapper here —
+            // onSuccess can fire more than once per Send() call (once per retried attempt whose
+            // content failed validation), and only the truly terminal attempt should decrement.
             System.Threading.Interlocked.Increment(ref _pendingCount);
             AdjustLabelPending(label, 1);
             Task.Run(async () => await SendAsync(
-                label, messages, apiKey, baseUrl, model, maxTokens, reasoningEffort,
-                onSuccess: content => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onSuccess(content); },
-                onError:   err     => { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); onError(err); }));
+                label, messages, apiKey, baseUrl, model, maxTokens, reasoningEffort, timeoutSeconds, maxAttempts,
+                onSuccess, onError));
         }
 
         public static void TestConnection(Action<bool, string> onResult)
@@ -123,9 +161,10 @@ namespace Firefly
             };
             Task.Run(async () => await SendAsync(
                 "TestConnection", messages,
-                apiKey, baseUrl, model, FireflySettings.DefaultMaxCompletionTokens, "",
-                response => onResult(true, response.Trim()),
-                error => onResult(false, error)
+                apiKey, baseUrl, model, FireflySettings.DefaultMaxCompletionTokens, "", 60, 1,
+                response => { onResult(true, response.Trim()); return true; },
+                error => onResult(false, error),
+                trackPending: false
             ));
         }
 
@@ -154,17 +193,20 @@ namespace Firefly
             string model,
             int maxTokens,
             string reasoningEffort,
-            Action<string> onSuccess,
-            Action<string> onError)
+            int timeoutSeconds,
+            int maxAttempts,
+            Func<string, bool> onSuccess,
+            Action<string> onError,
+            bool trackPending = true)
         {
             if (apiKey.NullOrEmpty())
             {
+                if (trackPending) { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); }
                 MainThreadQueue.Enqueue(() => onError("No API key set — configure one in Mod Settings."));
                 return;
             }
 
             string lastError = null;
-            const int maxAttempts = 4;
             const int maxErrorChars = 500;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -202,7 +244,12 @@ namespace Firefly
                         request.Headers.Add("HTTP-Referer", "https://github.com/StixxyTape/Firefly");
                         request.Headers.Add("X-Title", "Firefly");
 
-                        using (var response = await Http.SendAsync(request))
+                        // Per-attempt timeout, not the shared HttpClient's own (much larger)
+                        // ceiling — lets each call site ask for a different effective timeout
+                        // (e.g. the world-seed call's longer 180s) without affecting every other
+                        // request that goes through this same static client.
+                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+                        using (var response = await Http.SendAsync(request, cts.Token))
                         {
                             var body = await response.Content.ReadAsStringAsync();
 
@@ -224,14 +271,43 @@ namespace Firefly
                                 continue;
                             }
 
-                            MainThreadQueue.Enqueue(() => onSuccess(content));
-                            return;
+                            // onSuccess runs on the main thread (it touches game state) and reports
+                            // back whether the content actually parsed/validated — a response that
+                            // arrived fine over the network but failed the caller's own validation
+                            // (bad JSON shape, an unknown key, whatever) is a failed attempt just
+                            // like a timeout, and gets retried the same way instead of silently
+                            // giving up on the first bad reply.
+                            var accepted = new TaskCompletionSource<bool>();
+                            MainThreadQueue.Enqueue(() =>
+                            {
+                                bool ok;
+                                try { ok = onSuccess(content); }
+                                catch (Exception e)
+                                {
+                                    Log.Warning($"[Firefly:{label}] onSuccess handler threw: {e.Message}");
+                                    ok = false;
+                                }
+                                accepted.SetResult(ok);
+                            });
+                            if (await accepted.Task)
+                            {
+                                if (trackPending)
+                                {
+                                    System.Threading.Interlocked.Decrement(ref _pendingCount);
+                                    AdjustLabelPending(label, -1);
+                                }
+                                return;
+                            }
+
+                            lastError = "Response received but failed validation.";
+                            LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} response was invalid; retrying.");
+                            continue;
                         }
                     }
                 }
                 catch (TaskCanceledException)
                 {
-                    lastError = "Timed out after 60s.";
+                    lastError = $"Timed out after {timeoutSeconds}s.";
                     LogWarningOnMainThread($"[Firefly:{label}] Attempt {attempt}/{maxAttempts} failed: {lastError}");
                 }
                 catch (Exception e)
@@ -241,6 +317,7 @@ namespace Firefly
                 }
             }
 
+            if (trackPending) { System.Threading.Interlocked.Decrement(ref _pendingCount); AdjustLabelPending(label, -1); }
             MainThreadQueue.Enqueue(() => onError($"Request failed. Last error: {lastError}"));
         }
 

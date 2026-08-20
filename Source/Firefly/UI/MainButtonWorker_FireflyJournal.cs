@@ -7,7 +7,6 @@ namespace Firefly
     public class MainButtonWorker_FireflyJournal : MainButtonWorker_ToggleTab
     {
         private static readonly string[] PendingGlyphs = { "◐", "◓", "◑", "◒" };
-        private static readonly Color ActivityColor = new Color(0.88f, 0.52f, 0.72f);
 
         public override bool Visible
         {
@@ -23,8 +22,12 @@ namespace Firefly
             base.DoButton(rect);
             if (!LLMClient.IsPending) return;
 
+            var pending = JournalCategoryVisuals.PendingCategories();
+            Color activityColor = pending.Count > 0
+                ? JournalCategoryVisuals.Blend(pending)
+                : Color.white;
             float wave = 0.5f + 0.5f * Mathf.Sin(Time.realtimeSinceStartup * 5f);
-            Color pulse = new Color(ActivityColor.r, ActivityColor.g, ActivityColor.b, 0.55f + wave * 0.4f);
+            Color pulse = new Color(activityColor.r, activityColor.g, activityColor.b, 0.55f + wave * 0.4f);
 
             // Pulsing outline keeps the activity visible even when the small badge is overlooked.
             GUI.color = pulse;
@@ -45,7 +48,10 @@ namespace Firefly
             Text.Anchor = TextAnchor.MiddleCenter;
             GUI.color = Color.white;
             Widgets.Label(badge, PendingGlyphs[frame]);
-            TooltipHandler.TipRegion(rect, "Fillion is writing the colony's story.");
+            string categories = pending.Count > 0
+                ? string.Join(" + ", pending.ConvertAll(JournalCategoryVisuals.Name))
+                : "Journal";
+            TooltipHandler.TipRegion(rect, $"Fillion is writing · {categories}.");
 
             GUI.color = Color.white;
             Text.Anchor = TextAnchor.UpperLeft;

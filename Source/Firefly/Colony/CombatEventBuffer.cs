@@ -422,6 +422,8 @@ namespace Firefly
             bool[] used, string colonistName, string colonistId, long firstTick, long lastTick)
         {
             long grace = GenDate.TicksPerHour;
+            int closestIndex = -1;
+            long closestDistance = long.MaxValue;
             for (int i = 0; i < outcomes.Count; i++)
             {
                 if (used[i]) continue;
@@ -431,9 +433,14 @@ namespace Firefly
                     : o.Subject == colonistName;
                 if (!sameSubject) continue;
                 if (o.Tick != 0L && (o.Tick < firstTick - grace || o.Tick > lastTick + grace)) continue;
-                return i;
+                long distance = o.Tick == 0L ? long.MaxValue : Math.Abs(o.Tick - lastTick);
+                if (closestIndex < 0 || distance < closestDistance)
+                {
+                    closestIndex = i;
+                    closestDistance = distance;
+                }
             }
-            return -1;
+            return closestIndex;
         }
 
         private void RebufferOutcomes(

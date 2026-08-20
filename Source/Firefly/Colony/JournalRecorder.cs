@@ -16,6 +16,7 @@ namespace Firefly
         private const int ArcIntervalDays    = 15;
 
         private readonly ColonyLedger _ledger;
+        private readonly JournalSummaryService _journalSummaries;
 
         private bool _enabled;
         private int  _tickCounter;
@@ -37,6 +38,7 @@ namespace Firefly
         public JournalRecorder(ColonyLedger ledger)
         {
             _ledger = ledger;
+            _journalSummaries = new JournalSummaryService(OnJournalWorkSettled);
         }
 
         public void SetEnabled(bool enabled) => _enabled = enabled;
@@ -79,6 +81,8 @@ namespace Firefly
 
             foreach (var threadId in _pendingThreadSummaries.ToList())
                 EnqueueThreadWork(threadId);
+
+            FireflyWorldComponent.Current?.TryResumeWorldWork();
 
             StartNextPendingThreadScan();
         }
@@ -177,8 +181,10 @@ namespace Firefly
             "attention. \"\n\n" +
             "8 Lines maximum.";
 
-        private static readonly string ArcSystemPrompt =
-            "You are Fillion, chronicler of a colony on a distant earth-like rimworld. You will be " +
+        // Colony-specific — World History now has its own dedicated arc prompt
+        // (WorldThreadScanIngest.WorldArcHistorySystemPrompt) rather than sharing this one.
+        public static readonly string ArcSystemPrompt =
+            "You are Fillion, narrator of a colony on a distant earth-like rimworld. You will be " +
             "given the colony's history so far (if one exists), followed by recent daily summaries " +
             "not yet folded in. Your job is to rewrite the history into a single updated account of " +
             "the colony's story.\n\n" +
@@ -193,6 +199,8 @@ namespace Firefly
             "You should be curious and invested in this story. Note how the wider world relates to the " +
             "colony — who has visited, who has noticed them, who they've traded with or fought — so " +
             "the world beyond feels present and alive.\n\n" +
+            "Never include meta figures — relationship points, mood percentages, or similar. Describe " +
+            "the situational equivalent instead.\n\n" +
             "Keep it to a single flowing account, plain past-tense prose. No lists. 10 lines maximum.";
 
         // Reads today's raw colony record directly (not pre-extracted facts) and the full
@@ -259,52 +267,6 @@ namespace Firefly
             "\"updates\":[{\"id\":\"string\",\"facts\":[\"string\"]}]}\n" +
             "Both arrays must always be present, using empty arrays when there is nothing to report. " +
             "Every update id must exactly match an id from the existing-threads block; never use a name as an id.";
-
-        // Writes a touched existing thread's complete summary from its immutable chunks and
-        // unchunked facts. The previous summary is deliberately excluded so drift cannot compound.
-        private static readonly string ThreadSummarizeSystemPrompt =
-            "You are Fillion, narrator of one ongoing story thread in a colony on a distant " +
-            "earth-like rimworld. You will receive the thread's name, summaries of older facts, and " +
-            "its newer facts. Your job is to summarize the thread's facts into a short piece of " +
-            "focused writing, detailing what happened.\n\n" +
-            "Write exactly three compact sentences. The first establishes the thread's origin and " +
-            "its essential named participants. The second covers major developments and where " +
-            "things currently stand. The third states what remains unresolved, framed with " +
-            "Fillion's curious, invested voice. Omit texture, repetition, minor incidents, and " +
-            "questions later facts have already answered. Aim for roughly 500-700 characters " +
-            "total.\n\n" +
-            "Preserve guesses, possibilities, and open questions as uncertainty rather than " +
-            "treating them as settled — but only where they're still genuinely unresolved. When " +
-            "later material explicitly answers an earlier question, use that resolution instead " +
-            "of restating the question.\n\n" +
-            "Never include meta figures - relationship points, mood percentages, infection " +
-            "percentages, or similar. If you need to describe them, describe their situational " +
-            "equivalent instead.\n\n" +
-            "Example summary:\n" +
-            "\"The colony's dealings with an ominous stranger began when they dropped off a " +
-            "mysterious gift one day. The Royal Empire later inquired about the stranger and bought " +
-            "the gift off the colony for a moderate sum, and no word has come since. Who was the " +
-            "stranger, and what does the Empire really want with that item?\"\n\n" +
-            "Return only the summary itself as plain prose — no JSON, no headers, no quotation marks, " +
-            "no introduction or conclusion.";
-
-        // Condenses one immutable fact batch into hidden source material for the summarizer.
-        private static readonly string ThreadChunkSystemPrompt =
-            "You are Fillion, narrator of one ongoing story thread in a colony on a distant " +
-            "earth-like rimworld. You will receive one chronological batch of facts about this " +
-            "story thread, and your job is to condense them into a short piece of focused writing, " +
-            "including all the important, consequential, and notable details.\n\n" +
-            "Preserve all narratively important people, factions, items, events, changes, causes, " +
-            "outcomes, and unresolved stakes. Keep their order clear and state causality only when " +
-            "the facts support it. Always use full names, titles, faction names, and similar in " +
-            "order to keep it clear which entities are involved.\n\n" +
-            "Do not invent, embellish, or resolve anything. Preserve guesses, possibilities, and " +
-            "open questions as uncertainty, woven as underlying texture within the paragraph. " +
-            "Remove repetition and minor connective wording, but do not discard distinct " +
-            "consequential information. Use plain, compact language rather than Fillion's " +
-            "player-facing voice.\n\n" +
-            "Return only a single condensed paragraph. Return only plain prose — no JSON, no " +
-            "headers, no quotation marks, no introduction or conclusion, no day labels.";
 
         private static string DailySystemPrompt() => SummarySystemPrompt;
 
@@ -382,31 +344,19 @@ namespace Firefly
         // Threads for the single day-end thread scan.
         public const string DailySummaryLabel    = "DailySummary";
         public const string ThreadScanLabel      = "ThreadScan";
-        public const string ThreadRepairLabel    = "ThreadRepair";
-        public const string ThreadChunkLabel     = "ThreadChunk";
-        public const string ThreadSummarizeLabel = "ThreadSummarize";
         public const string ArcHistoryLabel      = "ArcHistory";
-        public const string BackfillLabel        = "Backfill";
 
-        public static readonly string[] ColonyPendingLabels  = { DailySummaryLabel, ArcHistoryLabel, BackfillLabel };
+        // Backfill (catching up a day that never got summarised) reuses SendSummaryRequest
+        // directly rather than its own label — it's the same call for the same purpose, just
+        // triggered for a past day instead of the one that just closed.
+        public static readonly string[] ColonyPendingLabels  = { DailySummaryLabel, ArcHistoryLabel };
         public static readonly string[] ThreadsPendingLabels =
-            { ThreadScanLabel, ThreadRepairLabel, ThreadChunkLabel, ThreadSummarizeLabel };
+            { ThreadScanLabel, JournalSummaryService.ChunkLabel, JournalSummaryService.SummaryLabel };
 
-        // Cheap, mechanical fix-up call — given only a response that failed to parse, fixes JSON
-        // syntax/escaping/key formatting without touching narrative content. Tried once per failed
-        // scan response, before paying for a full retry of the expensive scan call itself.
-        private static readonly string ThreadRepairSystemPrompt =
-            "You repair malformed JSON. Return only the corrected JSON, with no markdown or " +
-            "commentary.\n\n" +
-            "Required shape:\n" +
-            "{\"new_threads\":[{\"name\":\"string\",\"summary\":\"string\",\"facts\":[\"string\"]}]," +
-            "\"updates\":[{\"id\":\"string\",\"facts\":[\"string\"]}]}\n\n" +
-            "Fix only JSON syntax, escaping, and schema-key formatting. Preserve all supplied " +
-            "narrative content exactly. Never add, infer, rewrite, summarize, or remove narrative " +
-            "content. Both arrays must be present. If the response is too incomplete to repair " +
-            "without inventing content, return it unchanged.";
-
-        private void SendSummaryRequest(int day, string content)
+        // onDone fires after the request settles either way (success or failure) — used by the
+        // backfill queue below to chain to the next missing day without its own LLMClient.Send
+        // call. Ordinary same-day calls just leave it null.
+        private void SendSummaryRequest(int day, string content, Action onDone = null)
         {
             Log.Message($"[Firefly:{DailySummaryLabel}] Sending Day {day}...");
 
@@ -425,17 +375,23 @@ namespace Firefly
                 onSuccess: summary =>
                 {
                     Log.Message($"[Firefly:{DailySummaryLabel}] Responded for Day {day}: {summary}");
+                    if (!IsStillActive) { onDone?.Invoke(); return true; }
+                    if (summary.NullOrEmpty()) return false; // empty reply — worth another attempt
                     // Write through the ledger instance this request was made for, not
                     // ColonyLedger.Current — the player may have switched saves while this
                     // callback was in flight, and Current would then point at a different colony.
                     _ledger?.SetDailySummary(day, summary);
-                    if (!IsStillActive) return;
+                    FireflyWorldComponent.Current?.QueueDailyWorldWork(day, summary.Trim());
                     MaybeSendArcSummary();
+                    onDone?.Invoke();
+                    return true;
                 },
-                onError: err => Log.Warning($"[Firefly:{DailySummaryLabel}] Failed for Day {day}: {err}"));
+                onError: err =>
+                {
+                    Log.Warning($"[Firefly:{DailySummaryLabel}] Failed for Day {day}: {err}");
+                    onDone?.Invoke();
+                });
         }
-
-        private const int ThreadJsonMaxAttempts = 4;
 
         private void RememberPendingThreadScan(int day, string content)
         {
@@ -459,7 +415,7 @@ namespace Firefly
             // A later day waits only for work that can still change a summary this session.
             // Persisted failed items remain queued for load-time recovery, but must not stall all
             // future scans after their in-session attempt has already settled.
-            if (_activeThreadScanDay.HasValue || _threadWork.Values.Any(s => s.InFlight) || !IsStillActive) return;
+            if (_activeThreadScanDay.HasValue || _journalSummaries.AnyWorking || !IsStillActive) return;
             var next = _pendingThreadScans
                 .Where(s => !_attemptedThreadScanDays.Contains(s.Day))
                 .OrderBy(s => s.Day)
@@ -475,7 +431,11 @@ namespace Firefly
         // the full existing-thread index and decides new-vs-update AND writes each thread's
         // summary in the same response — no separate extraction, relevance, or write pass. Fires
         // independently of the daily summary call, not chained after it.
-        private void SendThreadScanRequest(string content, int day, int attempt = 1)
+        //
+        // Invalid JSON here used to retry via its own bespoke attempt counter (RetryOrGiveUp) —
+        // removed now that LLMClient.Send retries a validation failure the same way it retries a
+        // network failure, driven by the shared Max retries setting instead of a hardcoded 4.
+        private void SendThreadScanRequest(string content, int day)
         {
             if (_ledger == null) return;
 
@@ -486,7 +446,7 @@ namespace Firefly
                 (threadContext.NullOrEmpty() ? "(none)" : threadContext.Trim()) +
                 "\n\n=== TODAY'S COLONY RECORD ===\n" + content;
 
-            Log.Message($"[Firefly:{ThreadScanLabel}] Sending... (attempt {attempt}/{ThreadJsonMaxAttempts})");
+            Log.Message($"[Firefly:{ThreadScanLabel}] Sending...");
             LLMClient.Send(
                 ThreadScanLabel,
                 ThreadScanSystemPrompt,
@@ -494,7 +454,7 @@ namespace Firefly
                 onSuccess: rawJson =>
                 {
                     Log.Message($"[Firefly:{ThreadScanLabel}] Responded: {rawJson}");
-                    if (!IsStillActive) return;
+                    if (!IsStillActive) return true;
 
                     List<string> touchedExisting;
                     try
@@ -506,27 +466,14 @@ namespace Firefly
                         // A code-level failure applying otherwise-valid JSON — retrying sends the
                         // same broken input into the same code path, so don't.
                         Log.Warning($"[Firefly:{ThreadScanLabel}] Ingest failed: {e.Message}");
-                        return;
+                        return true;
                     }
 
-                    if (touchedExisting != null)
-                    {
-                        foreach (var id in touchedExisting) EnqueueThreadWork(id);
-                        CompletePendingThreadScan(day);
-                        return;
-                    }
+                    if (touchedExisting == null) return false; // invalid JSON — worth another attempt
 
-                    // LLM repair call temporarily disabled — testing whether the deterministic
-                    // bracket-repair alone (TryAutoCloseBrackets, runs automatically inside
-                    // StoryThreadScanIngest.TryParse before this point is ever reached) is enough
-                    // on its own. Re-enable by uncommenting below if that turns out insufficient.
-                    // if (attempt == 1 && !rawJson.NullOrEmpty())
-                    // {
-                    //     SendThreadScanRepairRequest(content, day, rawJson, attempt);
-                    //     return;
-                    // }
-
-                    RetryOrGiveUp(content, day, attempt);
+                    foreach (var id in touchedExisting) EnqueueThreadWork(id);
+                    CompletePendingThreadScan(day);
+                    return true;
                 },
                 onError: err =>
                 {
@@ -536,305 +483,100 @@ namespace Firefly
                 });
         }
 
-        private void RetryOrGiveUp(string content, int day, int attempt)
-        {
-            if (attempt < ThreadJsonMaxAttempts)
-            {
-                Log.Warning($"[Firefly:{ThreadScanLabel}] Invalid JSON — retrying ({attempt + 1}/{ThreadJsonMaxAttempts}).");
-                SendThreadScanRequest(content, day, attempt + 1);
-            }
-            else
-            {
-                _activeThreadScanDay = null;
-                Log.Warning($"[Firefly:{ThreadScanLabel}] Gave up after {ThreadJsonMaxAttempts} attempts — work remains queued for recovery.");
-                StartNextPendingThreadScan();
-            }
-        }
-
-        // One repair shot per failed scan response — not itself retried. If the repair call
-        // errors out, or its own output still fails to parse, falls through to the existing
-        // full-retry-from-scratch path, consuming one of ThreadJsonMaxAttempts same as before.
-        // A repair success costs nothing against that budget.
-        private void SendThreadScanRepairRequest(string content, int day, string brokenJson, int attempt)
-        {
-            if (_ledger == null) return;
-
-            Log.Message($"[Firefly:{ThreadRepairLabel}] Attempting repair of malformed scan response...");
-            LLMClient.Send(
-                ThreadRepairLabel,
-                ThreadRepairSystemPrompt,
-                brokenJson,
-                onSuccess: repairedJson =>
-                {
-                    Log.Message($"[Firefly:{ThreadRepairLabel}] Repair responded: {repairedJson}");
-                    if (!IsStillActive) return;
-
-                    List<string> touchedExisting;
-                    try
-                    {
-                        touchedExisting = StoryThreadScanIngest.ApplyScanResult(_ledger, repairedJson, day);
-                    }
-                    catch (Exception e)
-                    {
-                        Log.Warning($"[Firefly:{ThreadRepairLabel}] Ingest failed: {e.Message}");
-                        return;
-                    }
-
-                    if (touchedExisting != null)
-                    {
-                        Log.Message($"[Firefly:{ThreadRepairLabel}] Repair succeeded — full retry avoided.");
-                        foreach (var id in touchedExisting) EnqueueThreadWork(id);
-                        CompletePendingThreadScan(day);
-                        return;
-                    }
-
-                    Log.Warning($"[Firefly:{ThreadRepairLabel}] Repaired response still invalid — falling back to full retry.");
-                    RetryOrGiveUp(content, day, attempt);
-                },
-                onError: err =>
-                {
-                    Log.Warning($"[Firefly:{ThreadRepairLabel}] Failed: {err} — falling back to full retry.");
-                    if (IsStillActive) RetryOrGiveUp(content, day, attempt);
-                });
-        }
-
-        // Trigger for folding a thread's oldest unchunked facts into a permanent chunk — whichever
-        // comes first, since fact length varies enough that count alone isn't a reliable proxy for
-        // how large the resulting prompt would be.
-        private const int ChunkFactThreshold = 30;
-        private const int ChunkCharThreshold = 3000;
-
-        // Per-thread work: chunk maintenance (folding old facts into permanent condensed history)
-        // and the full summarize pass, serialized so at most one of either is ever in flight per
-        // thread — two overlapping days both wanting to touch the same thread could otherwise let
-        // a slower response clobber a fresher one, or two chunk calls claim overlapping fact
-        // ranges. A touch that lands while work is already in flight just flags NeedsAnotherPass
-        // rather than firing a second concurrent call; re-evaluated fresh (not replayed) once the
-        // in-flight call finishes, since by then the ledger may have moved on further still.
-        private sealed class ThreadWorkState
-        {
-            public bool InFlight;
-            public bool NeedsAnotherPass;
-        }
-
-        private readonly Dictionary<string, ThreadWorkState> _threadWork = new Dictionary<string, ThreadWorkState>();
-
-        // UI-facing view of the active save's per-thread worker. Covers the full serialized
-        // chunk-then-summarize sequence, not just whichever individual LLM call is active now.
         public static bool IsThreadWorking(string threadId)
         {
             if (threadId.NullOrEmpty()) return false;
             var recorder = Current.Game?.GetComponent<FireflyGameComponent>()?.Recorder;
-            if (recorder == null || !recorder.IsStillActive) return false;
-            return recorder._threadWork.TryGetValue(threadId, out var state) && state.InFlight;
+            return recorder != null && recorder.IsStillActive &&
+                   recorder._journalSummaries.IsWorking("story:" + threadId);
         }
 
         private void EnqueueThreadWork(string threadId)
         {
-            if (threadId.NullOrEmpty()) return;
-            if (!_pendingThreadSummaries.Contains(threadId, StringComparer.OrdinalIgnoreCase))
-                _pendingThreadSummaries.Add(threadId);
-
-            if (!_threadWork.TryGetValue(threadId, out var state))
-            {
-                state = new ThreadWorkState();
-                _threadWork[threadId] = state;
-            }
-
-            if (state.InFlight)
-            {
-                state.NeedsAnotherPass = true;
-                return;
-            }
-
-            state.InFlight = true;
-            RunThreadWorkStep(threadId);
+            var thread = _ledger?.StoryThreads.FirstOrDefault(t =>
+                string.Equals(t.Id, threadId, StringComparison.OrdinalIgnoreCase));
+            if (thread == null || !thread.Journal.SummaryStale) return;
+            if (!_pendingThreadSummaries.Contains(thread.Id, StringComparer.OrdinalIgnoreCase))
+                _pendingThreadSummaries.Add(thread.Id);
+            _journalSummaries.Enqueue("story:" + thread.Id, thread.Name, thread.Journal,
+                () => IsStillActive && _ledger.StoryThreads.Contains(thread));
         }
 
-        // Re-evaluates a thread's state fresh — chunk if there's enough unchunked material,
-        // otherwise summarize. A completed chunk call loops back through here (see
-        // SendThreadChunkRequest) so a thread that's accumulated several chunks' worth of facts
-        // gets folded down fully before ever summarizing, rather than summarizing against a
-        // still-oversized unchunked tail.
-        private void RunThreadWorkStep(string threadId)
+        public void RegenerateWorldThreads(IEnumerable<string> ids, Action<bool> completed)
         {
-            if (!_threadWork.TryGetValue(threadId, out var state)) return;
-            if (!IsStillActive) { state.InFlight = false; return; }
-
-            var thread = _ledger?.StoryThreads.FirstOrDefault(t => t.Id == threadId);
-            if (thread == null)
-            {
-                _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
-                state.InFlight = false;
-                StartNextPendingThreadScan();
-                return;
-            }
-
-            int unchunkedCount = thread.Facts.Count - thread.ChunkedThroughFactIndex;
-            int unchunkedChars = 0;
-            for (int i = thread.ChunkedThroughFactIndex; i < thread.Facts.Count; i++)
-                unchunkedChars += thread.Facts[i]?.Text?.Length ?? 0;
-
-            if (unchunkedCount >= ChunkFactThreshold || unchunkedChars >= ChunkCharThreshold)
-            {
-                SendThreadChunkRequest(threadId);
-                return;
-            }
-
-            SendThreadSummarizeRequest(threadId);
+            var world = FireflyWorldComponent.Current;
+            var wanted = new HashSet<string>(ids ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var targets = world?.WorldThreads.Where(t => t != null && wanted.Contains(t.Id))
+                .Select(t => new JournalSummaryService.Target
+                {
+                    Key = "world:" + t.Id,
+                    Title = t.Title,
+                    Record = t.Journal,
+                    ChunkRequestLabel = FireflyWorldComponent.WorldChunkLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.WorldSummaryLabel,
+                    // World Threads and the Faction Narrative pair share a summary prompt distinct
+                    // from Story Threads (which stay on the plain default) and from Description —
+                    // but the chunker itself stays shared across all three, no override here.
+                    SummaryPromptOverride = JournalSummaryService.NarrativeSummaryPrompt,
+                    IsActive = () => IsStillActive && ReferenceEquals(FireflyWorldComponent.Current, world) &&
+                        world.WorldThreads.Contains(t),
+                }) ?? Enumerable.Empty<JournalSummaryService.Target>();
+            _journalSummaries.EnqueueBatch(targets, completed);
         }
 
-        // Called once a thread's work settles — either the summarize pass completed, or chunking
-        // failed and there's nothing further to do this pass. If more facts landed while this was
-        // in flight, loops back through RunThreadWorkStep rather than just clearing the flag, so
-        // nothing touched mid-flight gets silently left un-summarized.
-        private void FinishThreadWork(string threadId, bool completed = false)
+        // Narrative pair (event-driven story) — populated by Faction Update.
+        public void RegenerateFactionNarratives(IEnumerable<string> keys, Action<bool> completed)
         {
-            if (!_threadWork.TryGetValue(threadId, out var state)) return;
+            var world = FireflyWorldComponent.Current;
+            var wanted = new HashSet<string>(keys ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var targets = world?.FactionSnapshots.Where(f => f != null && wanted.Contains(f.Key))
+                .Select(f => new JournalSummaryService.Target
+                {
+                    Key = "faction-narrative:" + f.Key,
+                    Title = f.FactionName,
+                    Record = f.NarrativeJournal,
+                    ChunkRequestLabel = FireflyWorldComponent.FactionChunkLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.FactionSummaryLabel,
+                    SummaryPromptOverride = JournalSummaryService.NarrativeSummaryPrompt,
+                    IsActive = () => IsStillActive && ReferenceEquals(FireflyWorldComponent.Current, world) &&
+                        world.FactionSnapshots.Contains(f),
+                }) ?? Enumerable.Empty<JournalSummaryService.Target>();
+            _journalSummaries.EnqueueBatch(targets, completed);
+        }
 
-            if (IsStillActive && state.NeedsAnotherPass)
+        // Faction pair (stable characterization) — populated directly by Faction Update.
+        public void RegenerateFactionDescriptions(IEnumerable<string> keys, Action<bool> completed)
+        {
+            var world = FireflyWorldComponent.Current;
+            var wanted = new HashSet<string>(keys ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var targets = world?.FactionSnapshots.Where(f => f != null && wanted.Contains(f.Key))
+                .Select(f => new JournalSummaryService.Target
+                {
+                    Key = "faction-description:" + f.Key,
+                    Title = f.FactionName,
+                    Record = f.FactionJournal,
+                    ChunkRequestLabel = FireflyWorldComponent.DescriptionChunkLabel,
+                    SummaryRequestLabel = FireflyWorldComponent.DescriptionSummaryLabel,
+                    // Description is a settled identity portrait, not an unfolding plot — the
+                    // shared story-shaped prompt's "developments in order"/"unresolved stakes"
+                    // framing doesn't fit, so this uses its own dedicated prompt pair.
+                    SummaryPromptOverride = JournalSummaryService.DescriptionSummaryPrompt,
+                    ChunkPromptOverride = JournalSummaryService.DescriptionChunkPrompt,
+                    IsActive = () => IsStillActive && ReferenceEquals(FireflyWorldComponent.Current, world) &&
+                        world.FactionSnapshots.Contains(f),
+                }) ?? Enumerable.Empty<JournalSummaryService.Target>();
+            _journalSummaries.EnqueueBatch(targets, completed);
+        }
+
+        private void OnJournalWorkSettled()
+        {
+            _pendingThreadSummaries.RemoveAll(id =>
             {
-                state.NeedsAnotherPass = false;
-                RunThreadWorkStep(threadId);
-                return;
-            }
-
-            if (completed)
-                _pendingThreadSummaries.RemoveAll(id => string.Equals(id, threadId, StringComparison.OrdinalIgnoreCase));
-
-            state.InFlight = false;
+                var thread = _ledger?.StoryThreads.FirstOrDefault(t =>
+                    string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
+                return thread == null || !thread.Journal.SummaryStale;
+            });
             StartNextPendingThreadScan();
-        }
-
-        // Writes a touched thread's complete summary from scratch — condensed history (permanent
-        // chunks) plus whatever facts haven't been folded into one yet. Never reads or references
-        // the previous summary, so it can't compound drift from repeatedly rewriting a rewrite.
-        private void SendThreadSummarizeRequest(string threadId)
-        {
-            var thread = _ledger?.StoryThreads.FirstOrDefault(t => t.Id == threadId);
-            if (thread == null) { FinishThreadWork(threadId); return; }
-
-            var sb = new StringBuilder();
-            sb.AppendLine("=== THREAD NAME ===");
-            sb.AppendLine(thread.Name);
-            sb.AppendLine();
-
-            if (thread.Chunks.Count > 0)
-            {
-                sb.AppendLine("=== CONDENSED HISTORY ===");
-                foreach (var chunk in thread.Chunks)
-                    sb.AppendLine($"[Day {chunk.StartDay}-{chunk.EndDay}] {chunk.Summary}");
-                sb.AppendLine();
-            }
-
-            sb.AppendLine("=== RECENT FACTS ===");
-            bool anyFacts = false;
-            for (int i = thread.ChunkedThroughFactIndex; i < thread.Facts.Count; i++)
-            {
-                var fact = thread.Facts[i];
-                if (fact == null) continue;
-                sb.AppendLine($"[Day {fact.Day}] {fact.Text}");
-                anyFacts = true;
-            }
-            if (!anyFacts) sb.AppendLine("(none)");
-
-            string prompt = sb.ToString().TrimEnd();
-
-            Log.Message($"[Firefly:{ThreadSummarizeLabel}] Sending for thread \"{threadId}\"...");
-            LLMClient.Send(
-                ThreadSummarizeLabel,
-                ThreadSummarizeSystemPrompt,
-                prompt,
-                onSuccess: prose =>
-                {
-                    Log.Message($"[Firefly:{ThreadSummarizeLabel}] Responded for thread \"{threadId}\": {prose}");
-                    if (IsStillActive && !prose.NullOrEmpty())
-                    {
-                        _ledger?.UpdateStoryThreadSummary(threadId, prose.Trim());
-                        FinishThreadWork(threadId, completed: true);
-                        return;
-                    }
-                    FinishThreadWork(threadId);
-                },
-                onError: err =>
-                {
-                    Log.Warning($"[Firefly:{ThreadSummarizeLabel}] Failed for thread \"{threadId}\": {err}");
-                    FinishThreadWork(threadId);
-                });
-        }
-
-        // Condenses one exact, immutable range beginning at the thread's persisted cursor. Facts
-        // may be appended while the request is in flight, but this snapshot's boundary never
-        // changes; the cursor advances only after the resulting chunk is successfully persisted.
-        private void SendThreadChunkRequest(string threadId, int attempt = 1)
-        {
-            var thread = _ledger?.StoryThreads.FirstOrDefault(t => t.Id == threadId);
-            if (thread == null) { FinishThreadWork(threadId); return; }
-
-            int startIndex = Math.Max(0, thread.ChunkedThroughFactIndex);
-            int count = Math.Min(ChunkFactThreshold, thread.Facts.Count - startIndex);
-            if (count <= 0) { FinishThreadWork(threadId); return; }
-
-            var batch = thread.Facts.Skip(startIndex).Take(count).ToList();
-            var firstFact = batch.FirstOrDefault(f => f != null);
-            var lastFact = batch.LastOrDefault(f => f != null);
-            if (firstFact == null || lastFact == null)
-            {
-                Log.Warning($"[Firefly:{ThreadChunkLabel}] Thread \"{threadId}\" has no usable facts in the claimed range.");
-                FinishThreadWork(threadId);
-                return;
-            }
-
-            int newCursorValue = startIndex + count;
-            int startDay = firstFact.Day;
-            int endDay = lastFact.Day;
-
-            var sb = new StringBuilder();
-            sb.AppendLine("=== THREAD NAME ===");
-            sb.AppendLine(thread.Name);
-            sb.AppendLine();
-            sb.AppendLine("=== FACTS TO CONDENSE ===");
-            foreach (var fact in batch)
-            {
-                if (fact != null)
-                    sb.AppendLine($"[Day {fact.Day}] {fact.Text}");
-            }
-
-            string prompt = sb.ToString().TrimEnd();
-
-            Log.Message($"[Firefly:{ThreadChunkLabel}] Sending for thread \"{threadId}\" " +
-                        $"(facts {startIndex}-{newCursorValue - 1}, attempt {attempt})...");
-            LLMClient.Send(
-                ThreadChunkLabel,
-                ThreadChunkSystemPrompt,
-                prompt,
-                onSuccess: prose =>
-                {
-                    Log.Message($"[Firefly:{ThreadChunkLabel}] Responded for thread \"{threadId}\": {prose}");
-                    if (!IsStillActive) { FinishThreadWork(threadId); return; }
-                    if (prose.NullOrEmpty())
-                    {
-                        Log.Warning($"[Firefly:{ThreadChunkLabel}] Empty response for thread \"{threadId}\".");
-                        FinishThreadWork(threadId);
-                        return;
-                    }
-
-                    var current = _ledger?.StoryThreads.FirstOrDefault(t => t.Id == threadId);
-                    if (current == null || current.ChunkedThroughFactIndex != startIndex)
-                    {
-                        Log.Warning($"[Firefly:{ThreadChunkLabel}] Stale chunk response for thread \"{threadId}\" — dropped.");
-                        FinishThreadWork(threadId);
-                        return;
-                    }
-
-                    _ledger.AddThreadChunk(threadId, startDay, endDay, prose.Trim(), newCursorValue);
-                    RunThreadWorkStep(threadId);
-                },
-                onError: err =>
-                {
-                    Log.Warning($"[Firefly:{ThreadChunkLabel}] Failed for thread \"{threadId}\": {err}");
-                    FinishThreadWork(threadId);
-                });
         }
 
         // Only folds in a contiguous run of summarised days starting right after LastArcDay —
@@ -905,10 +647,12 @@ namespace Firefly
                     combined,
                     onSuccess: arcText =>
                     {
+                        if (!IsStillActive) { _arcInFlight = false; return true; }
+                        if (arcText.NullOrEmpty()) return false; // empty reply — worth another attempt
                         Log.Message($"[Firefly:{ArcHistoryLabel}] Responded (through Day {day}): {arcText}");
                         _arcInFlight = false;
-                        if (!IsStillActive) return;
                         _ledger?.SetColonyHistory(arcText, day);
+                        return true;
                     },
                     onError: err =>
                     {
@@ -942,7 +686,7 @@ namespace Firefly
             _backfillQueue.Clear();
             foreach (var record in pending) _backfillQueue.Enqueue(record);
 
-            Log.Message($"[Firefly:{BackfillLabel}] Backfilling {_backfillQueue.Count} missing summaries, one at a time...");
+            Log.Message($"[Firefly:{DailySummaryLabel}] Backfilling {_backfillQueue.Count} missing summaries, one at a time...");
             _backfillActive = true;
             ProcessBackfillQueue();
         }
@@ -971,25 +715,12 @@ namespace Firefly
             }
 
             var record = _backfillQueue.Dequeue();
-            Log.Message($"[Firefly:{BackfillLabel}] Sending Day {record.Day} ({_backfillQueue.Count} remaining)...");
-            LLMClient.Send(
-                BackfillLabel,
-                DailySystemPrompt(),
-                record.Timeline,
-                onSuccess: summary =>
-                {
-                    Log.Message($"[Firefly:{BackfillLabel}] Responded for Day {record.Day}: {summary}");
-                    // Don't gate the write itself — mutating a detached ledger is harmless, it's
-                    // discarded once out of scope. ProcessBackfillQueue's own entry guard above
-                    // is what stops the queue from chaining further paid requests once stale.
-                    _ledger?.SetDailySummary(record.Day, summary);
-                    ProcessBackfillQueue();
-                },
-                onError: err =>
-                {
-                    Log.Warning($"[Firefly:{BackfillLabel}] Failed for Day {record.Day}: {err}");
-                    ProcessBackfillQueue();
-                });
+            Log.Message($"[Firefly:{DailySummaryLabel}] Backfilling Day {record.Day} ({_backfillQueue.Count} remaining)...");
+            // Same call, same label, as an ordinary same-day summary — just for a day that got
+            // missed. onDone chains to the next queued day once this one settles, one at a time,
+            // so a stale in-flight request can't chain further calls after the entry guard above
+            // has already stopped the queue.
+            SendSummaryRequest(record.Day, record.Timeline, onDone: ProcessBackfillQueue);
         }
     }
 }

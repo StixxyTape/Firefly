@@ -310,7 +310,7 @@ namespace Firefly
         public void SetDailySummary(int day, string summary)
         {
             var record = _pastDays.FirstOrDefault(d => d.Day == day);
-            if (record != null) record.Summary = summary;
+            if (record != null) record.Summary = summary?.Trim() ?? "";
         }
 
         public void SetColonyHistory(string history, int throughDay)
@@ -320,13 +320,18 @@ namespace Firefly
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
-        public void AddStoryThread(string id, string name, string description)
+        public void AddStoryThread(string id, string name, string activeSummary)
         {
             id   = id?.Trim();
             name = name?.Trim();
             if (id.NullOrEmpty() || name.NullOrEmpty()) return;
             if (_storyThreads.Any(s => s.Id == id)) return;
-            _storyThreads.Add(new StoryThread { Id = id, Name = name, Description = description });
+            _storyThreads.Add(new StoryThread
+            {
+                Id = id,
+                Name = name,
+                Journal = new JournalRecord { ActiveSummary = activeSummary?.Trim() ?? "" },
+            });
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
@@ -344,21 +349,7 @@ namespace Firefly
                 Log.Warning($"[Firefly] AddFactToThread: no thread with id \"{threadId}\" — fact dropped: {flat}");
                 return;
             }
-            thread.Facts.Add(new StoryThreadFact { Tick = tick, Day = day, Text = flat });
-        }
-
-        // Main-thread only. Queue via MainThreadQueue from async callbacks.
-        public void UpdateStoryThreadSummary(string id, string summary)
-        {
-            id = id?.Trim();
-            if (id.NullOrEmpty() || summary.NullOrEmpty()) return;
-            var thread = _storyThreads.FirstOrDefault(s => s.Id == id);
-            if (thread == null)
-            {
-                Log.Warning($"[Firefly] UpdateStoryThreadSummary: no thread with id \"{id}\" — summary dropped.");
-                return;
-            }
-            thread.Description = summary.Trim();
+            thread.Journal.AddFact(tick, day, flat);
         }
 
         // Main-thread only. Queue via MainThreadQueue from async callbacks.
@@ -368,60 +359,7 @@ namespace Firefly
             id = id?.Trim();
             if (id.NullOrEmpty()) return;
             var thread = _storyThreads.FirstOrDefault(s => s.Id == id);
-            if (thread != null) thread.LastTouchedTick = tick;
-        }
-
-        // Main-thread only. Queue via MainThreadQueue from async callbacks. Appends one
-        // permanent, never-revised chunk and advances the cursor past the facts it covers in
-        // the same call — the two always move together so a chunk can never be recorded without
-        // the cursor reflecting it (or vice versa).
-        public void AddThreadChunk(string threadId, int startDay, int endDay, string summary, int chunkedThroughFactIndex)
-        {
-            threadId = threadId?.Trim();
-            if (threadId.NullOrEmpty() || summary.NullOrEmpty()) return;
-            var thread = _storyThreads.FirstOrDefault(s => s.Id == threadId);
-            if (thread == null)
-            {
-                Log.Warning($"[Firefly] AddThreadChunk: no thread with id \"{threadId}\" — chunk dropped.");
-                return;
-            }
-            thread.Chunks.Add(new StoryThreadChunk { StartDay = startDay, EndDay = endDay, Summary = summary.Trim() });
-            thread.ChunkedThroughFactIndex = chunkedThroughFactIndex;
-        }
-
-        // Full context string for LLM or UI consumption.
-        public string BuildContextString()
-        {
-            var sb = new StringBuilder();
-
-            if (!_colonyHistory.NullOrEmpty())
-            {
-                sb.AppendLine("=== COLONY HISTORY ===");
-                sb.AppendLine(_colonyHistory.Trim());
-                sb.AppendLine();
-            }
-
-            bool hasRecent = false;
-            foreach (var day in _pastDays.Where(d => d.Day > _lastArcDay && !d.Summary.NullOrEmpty()).OrderBy(d => d.Day))
-            {
-                if (!hasRecent)
-                {
-                    sb.AppendLine("=== RECENT DAYS ===");
-                    hasRecent = true;
-                }
-                sb.AppendLine($"Day {day.Day}:");
-                sb.AppendLine(day.Summary.Trim());
-                sb.AppendLine();
-            }
-
-            string currentDay = GetCurrentDayContent();
-            if (!currentDay.NullOrEmpty())
-            {
-                sb.AppendLine("=== TODAY ===");
-                sb.Append(currentDay.TrimEnd());
-            }
-
-            return sb.ToString();
+            if (thread != null) thread.Journal.LastTouchedTick = tick;
         }
 
         // ── Colony status ─────────────────────────────────────────────────────
@@ -603,8 +541,8 @@ namespace Firefly
                 // the journal UI calls .ToUpperInvariant() on it unguarded, so a null/blank Name
                 // from a corrupted or hand-edited save would throw when the Threads tab is opened.
                 if (s.Name.NullOrEmpty()) s.Name = "(unnamed)";
-                if (s.Facts == null) s.Facts = new List<StoryThreadFact>();
-                else s.Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty() || f.Text.Trim().Length == 0);
+                if (s.Journal == null) s.Journal = new JournalRecord();
+                s.Journal.Facts.RemoveAll(f => f == null || f.Text.NullOrEmpty() || f.Text.Trim().Length == 0);
             }
             if (_colonyHistory    == null) _colonyHistory    = "";
 

@@ -29,6 +29,43 @@ namespace Firefly
             ("DeepSeek Chat",                       "deepseek/deepseek-chat"),
         };
 
+        // Shared by the global reasoning-effort dropdown and every per-call override dropdown.
+        private static readonly (string Label, string Value)[] ReasoningOptions = new (string, string)[]
+        {
+            ("Model default", ""),
+            ("None",          "none"),
+            ("Minimal",       "minimal"),
+            ("Low",           "low"),
+            ("Medium",        "medium"),
+            ("High",          "high"),
+        };
+
+        // Display name + LLMClient.Send label key for every call site that can take a per-call
+        // reasoning-effort override. Sourced from the label constants themselves, not duplicated
+        // strings, so this list can't silently drift from the actual call sites.
+        private static readonly (string Label, string Key)[] PerCallReasoningLabels = new (string, string)[]
+        {
+            ("Daily summary",    JournalRecorder.DailySummaryLabel),
+            ("Thread scan",      JournalRecorder.ThreadScanLabel),
+            ("Journal chunk",    JournalSummaryService.ChunkLabel),
+            ("Journal summary",  JournalSummaryService.SummaryLabel),
+            ("Arc history",      JournalRecorder.ArcHistoryLabel),
+            ("Raid narrative",   Patch_RaidNarrativeIntercept.RaidNarrativeLabel),
+            ("World seed",       FireflyWorldComponent.WorldSeedLabel),
+            ("World outcome",    FireflyWorldComponent.WorldOutcomeLabel),
+            ("Thread updates",   FireflyWorldComponent.WorldThreadUpdatesLabel),
+            ("World chunk",      FireflyWorldComponent.WorldChunkLabel),
+            ("World summary",    FireflyWorldComponent.WorldSummaryLabel),
+            ("World arc history", FireflyWorldComponent.WorldArcHistoryLabel),
+            ("Faction facts",      FireflyWorldComponent.FactionFactsLabel),
+            ("Faction update",   FireflyWorldComponent.FactionUpdateLabel),
+            ("Narrative chunk",  FireflyWorldComponent.FactionChunkLabel),
+            ("Narrative summary", FireflyWorldComponent.FactionSummaryLabel),
+            ("Description chunk", FireflyWorldComponent.DescriptionChunkLabel),
+            ("Description summary", FireflyWorldComponent.DescriptionSummaryLabel),
+            ("Faction tagline",  FireflyWorldComponent.FactionTaglineLabel),
+        };
+
         public FireflyMod(ModContentPack content) : base(content)
         {
             Settings = GetSettings<FireflySettings>();
@@ -189,7 +226,7 @@ namespace Firefly
             y = tipRect.yMax + cardGap;
 
             // ── Generation ──────────────────────────────────────────────────────
-            var generationCard = new Rect(pagePadding, y, contentWidth, 340f);
+            var generationCard = new Rect(pagePadding, y, contentWidth, 516f);
             DrawPanel(generationCard, new Color(0.095f, 0.105f, 0.115f, 0.94f), new Color(1f, 1f, 1f, 0.14f));
             float gx = generationCard.x + cardPadding;
             float gw = generationCard.width - cardPadding * 2f;
@@ -211,31 +248,64 @@ namespace Firefly
                 Widgets.HorizontalSlider(completionSlider, Settings.MaxCompletionTokens, 256f, 8192f) / 64f) * 64;
             gy = completionSlider.yMax + 18f;
 
-            DrawSettingLabel(ref gy, gx, gw, "Reasoning effort", ReasoningDisplayName(Settings.ReasoningEffort),
-                "Controls deliberation for supported reasoning models; other models ignore it.");
+            DrawSettingLabel(ref gy, gx, gw, "Request timeout", $"{Settings.RequestTimeoutSeconds}s",
+                "How long a request can run before it's given up on and retried. Applies to every LLM call in the mod.");
+            var timeoutSlider = new Rect(gx, gy, gw, 24f);
+            Settings.RequestTimeoutSeconds = Mathf.RoundToInt(
+                Widgets.HorizontalSlider(timeoutSlider, Settings.RequestTimeoutSeconds, 15f, 180f) / 5f) * 5;
+            gy = timeoutSlider.yMax + 18f;
+
+            DrawSettingLabel(ref gy, gx, gw, "Max retries",
+                Settings.MaxRetries == 0 ? "Off" : $"{Settings.MaxRetries} {(Settings.MaxRetries == 1 ? "retry" : "retries")}",
+                "How many times a failed request tries again (with a short backoff) before giving up. Applies to every LLM call in the mod.");
+            var retriesSlider = new Rect(gx, gy, gw, 24f);
+            Settings.MaxRetries = Mathf.RoundToInt(Widgets.HorizontalSlider(retriesSlider, Settings.MaxRetries, 0f, 8f));
+            gy = retriesSlider.yMax + 18f;
+
+            DrawFieldLabel(ref gy, gx, gw, "Reasoning effort",
+                "Default deliberation depth for reasoning models; overridable per call below.");
             var reasoningRow = new Rect(gx, gy, gw, 30f);
-            var reasoningOptions = new (string Label, string Value)[]
+            if (Widgets.ButtonText(reasoningRow, ReasoningDisplayName(Settings.ReasoningEffort) + "  ▼"))
+                Find.WindowStack.Add(new FloatMenu(BuildReasoningOptions(v => Settings.ReasoningEffort = v)));
+
+            y = generationCard.yMax + cardGap;
+
+            // ── Per-call reasoning ──────────────────────────────────────────────
+            var reasoningCard = new Rect(pagePadding, y, contentWidth, 76f + PerCallReasoningLabels.Length * 30f + cardPadding);
+            DrawPanel(reasoningCard, new Color(0.095f, 0.105f, 0.115f, 0.94f), new Color(1f, 1f, 1f, 0.14f));
+            float rx = reasoningCard.x + cardPadding;
+            float rw = reasoningCard.width - cardPadding * 2f;
+            float ry = reasoningCard.y + cardPadding;
+            DrawSectionHeading(ref ry, rx, rw, "Per-call reasoning",
+                "Override the default above for individual request types.");
+
+            foreach (var (displayLabel, key) in PerCallReasoningLabels)
             {
-                ("Model default", ""),
-                ("None",          "none"),
-                ("Minimal",       "minimal"),
-                ("Low",           "low"),
-                ("Medium",        "medium"),
-                ("High",          "high"),
-            };
-            float reasoningBtnWidth = reasoningRow.width / reasoningOptions.Length;
-            for (int i = 0; i < reasoningOptions.Length; i++)
-            {
-                var (optLabel, optValue) = reasoningOptions[i];
-                var btnRect = new Rect(reasoningRow.x + i * reasoningBtnWidth, reasoningRow.y, reasoningBtnWidth - 4f, reasoningRow.height);
-                bool selected = Settings.ReasoningEffort == optValue;
-                GUI.color = selected ? Color.white : new Color(1f, 1f, 1f, 0.6f);
-                if (Widgets.ButtonText(btnRect, selected ? $"[{optLabel}]" : optLabel))
-                    Settings.ReasoningEffort = optValue;
-                GUI.color = Color.white;
+                var rowRect = new Rect(rx, ry, rw, 26f);
+                var rowLabelRect = rowRect.LeftPartPixels(rw * 0.42f);
+                var rowBtnRect = new Rect(rowRect.x + rw * 0.42f, rowRect.y, rw * 0.58f, rowRect.height);
+
+                Text.Anchor = TextAnchor.MiddleLeft;
+                Widgets.Label(rowLabelRect, displayLabel);
+                Text.Anchor = TextAnchor.UpperLeft;
+
+                bool hasOverride = Settings.PerLabelReasoningEffort.ContainsKey(key);
+                string currentDisplay = hasOverride
+                    ? ReasoningDisplayName(Settings.PerLabelReasoningEffort[key])
+                    : $"Use default ({ReasoningDisplayName(Settings.ReasoningEffort)})";
+
+                if (Widgets.ButtonText(rowBtnRect, currentDisplay + "  ▼"))
+                {
+                    var useDefault = new FloatMenuOption($"Use default ({ReasoningDisplayName(Settings.ReasoningEffort)})",
+                        () => Settings.PerLabelReasoningEffort.Remove(key));
+                    Find.WindowStack.Add(new FloatMenu(
+                        BuildReasoningOptions(v => Settings.PerLabelReasoningEffort[key] = v, useDefault)));
+                }
+
+                ry = rowRect.yMax + 4f;
             }
 
-            y = generationCard.yMax + pagePadding;
+            y = reasoningCard.yMax + pagePadding;
             settingsContentHeight = y;
             Text.Font = GameFont.Small;
             Text.Anchor = TextAnchor.UpperLeft;
@@ -301,6 +371,22 @@ namespace Firefly
         {
             if (value.NullOrEmpty()) return "Model default";
             return char.ToUpperInvariant(value[0]) + value.Substring(1);
+        }
+
+        // Shared by the default reasoning-effort dropdown and every per-call override dropdown —
+        // both build the same option list from ReasoningOptions, differing only in the setter and
+        // (for per-call overrides) a leading "use default" entry.
+        private static List<FloatMenuOption> BuildReasoningOptions(
+            System.Action<string> onSelect, FloatMenuOption leadingOption = null)
+        {
+            var options = new List<FloatMenuOption>();
+            if (leadingOption != null) options.Add(leadingOption);
+            foreach (var (optLabel, optValue) in ReasoningOptions)
+            {
+                var value = optValue;
+                options.Add(new FloatMenuOption(optLabel, () => onSelect(value)));
+            }
+            return options;
         }
     }
 }
