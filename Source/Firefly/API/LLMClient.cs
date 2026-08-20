@@ -137,6 +137,15 @@ namespace Firefly
                     && settings.PerLabelReasoningEffort.TryGetValue(label, out var labelReasoningEffort)
                 ? labelReasoningEffort ?? ""
                 : settings.ReasoningEffort ?? "";
+            if (!reasoningEffort.NullOrEmpty() && !BaseUrlSupportsReasoningField(baseUrl))
+            {
+                Log.Warning($"[Firefly:{label}] A reasoning-effort override (\"{reasoningEffort}\") is set, " +
+                    "but the configured endpoint isn't known to accept the \"reasoning\" field OpenRouter uses " +
+                    "— some providers (confirmed for Google Gemini's OpenAI-compatible endpoint) hard-reject an " +
+                    "unrecognized field instead of ignoring it. Omitting it for this request rather than risk " +
+                    "breaking the call outright.");
+                reasoningEffort = "";
+            }
             int maxAttempts = Math.Max(1, settings.MaxRetries + 1);
 
             // Pending-count bookkeeping lives inside SendAsync itself now, not a wrapper here —
@@ -147,6 +156,20 @@ namespace Firefly
             Task.Run(async () => await SendAsync(
                 label, messages, apiKey, baseUrl, model, maxTokens, reasoningEffort, timeoutSeconds, maxAttempts,
                 onSuccess, onError));
+        }
+
+        // Whitelisted by host, not blacklisted by known-strict provider — a growing blacklist
+        // can't keep pace with every OpenAI-compatible endpoint this mod might ever point at, and
+        // the failure mode of guessing wrong the other way (assuming a new provider is lenient
+        // when it isn't) is much worse: a hard-rejected request on every single call, not just a
+        // silently-ignored setting. OpenRouter is the only endpoint actually verified to accept
+        // the "reasoning" field; add another host here only once it's been confirmed the same way.
+        private const string OpenRouterHost = "openrouter.ai";
+
+        private static bool BaseUrlSupportsReasoningField(string baseUrl)
+        {
+            return Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+                && string.Equals(uri.Host, OpenRouterHost, StringComparison.OrdinalIgnoreCase);
         }
 
         public static void TestConnection(Action<bool, string> onResult)
