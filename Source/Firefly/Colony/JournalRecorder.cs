@@ -87,15 +87,6 @@ namespace Firefly
             StartNextPendingThreadScan();
         }
 
-        private static Map ResolveJournalMap()
-        {
-            var maps = Find.Maps;
-            if (maps != null)
-                for (int i = 0; i < maps.Count; i++)
-                    if (maps[i] != null && maps[i].IsPlayerHome) return maps[i];
-            return Find.CurrentMap;
-        }
-
         public void Tick()
         {
             if (!_enabled || _ledger == null) return;
@@ -105,7 +96,7 @@ namespace Firefly
 
             try
             {
-                Map map = ResolveJournalMap();
+                Map map = ColonyLedger.ResolveMap();
                 if (map == null) return;
 
                 int hourOfDay  = GenLocalDate.HourOfDay(map);
@@ -514,10 +505,11 @@ namespace Firefly
                     Record = t.Journal,
                     ChunkRequestLabel = FireflyWorldComponent.WorldThreadFactChunkerLabel,
                     SummaryRequestLabel = FireflyWorldComponent.WorldThreadSummariserLabel,
-                    // World Threads and the Faction Narrative pair share a summary prompt distinct
-                    // from Story Threads (which stay on the plain default) and from Description —
-                    // but the chunker itself stays shared across all three, no override here.
-                    SummaryPromptOverride = JournalSummaryService.NarrativeSummaryPrompt,
+                    // World Threads get their own one-line summary prompt, mirroring how World
+                    // Seed writes its initial thread summaries — distinct from Story Threads (plain
+                    // default), Faction Narrative (NarrativeSummaryPrompt), and Description. The
+                    // chunker itself stays shared across all three, no override here.
+                    SummaryPromptOverride = JournalSummaryService.WorldThreadSummaryPrompt,
                     IsActive = () => IsStillActive && ReferenceEquals(FireflyWorldComponent.Current, world) &&
                         world.WorldThreads.Contains(t),
                 }) ?? Enumerable.Empty<JournalSummaryService.Target>();

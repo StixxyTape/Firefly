@@ -266,6 +266,8 @@ namespace Firefly
                 result.Faction.Tagline = result.Tagline;
                 result.Faction.TaglineCoveredNarrativeRevision =
                     result.Faction.NarrativeJournal.FactRevision;
+                result.Faction.TaglineCoveredFactionRevision =
+                    result.Faction.FactionJournal.FactRevision;
             }
             return returnedKeys.ToList();
         }

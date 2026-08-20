@@ -49,10 +49,13 @@ namespace Firefly
                 Scribe_Deep.Look(ref loadedJournal, "journal");
                 if (loadedJournal == null)
                 {
+                    int revision = oldDevelopments?.Count ?? 0;
                     Journal = new JournalRecord
                     {
                         ActiveSummary = oldSummary ?? "",
                         Facts = oldDevelopments ?? new List<JournalFact>(),
+                        FactRevision = revision,
+                        SummarizedRevision = oldSummary.NullOrEmpty() ? 0 : revision,
                         LastTouchedTick = oldTouched,
                     };
                 }

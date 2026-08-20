@@ -225,9 +225,10 @@ namespace Firefly
             "Do not invent, embellish, or resolve anything. An open question must leave your paragraph as open as it entered — preserve guesses, possibilities, and unresolved stakes as uncertainty, woven as underlying texture. Where a fact poses a rhetorical question, convert it into a plain statement of what is unknown. Remove repetition and minor connective wording, but never discard distinct consequential information. Later facts may update earlier ones — a wound healed, a standoff shifted — and where they clearly do, keep the progression brief rather than dwelling on superseded states.\n\n" +
             "Use plain, compact language rather than Fillion's player-facing voice. Keep the paragraph to roughly a third of the input's length. Return only plain prose — no JSON, no headers, no quotation marks, no introduction or conclusion, no day labels.";
 
-        // Covers World Threads and the Faction Narrative pair (NarrativeJournal), as distinct
-        // from Story Threads' SummaryPrompt above. No matching NarrativeChunkPrompt — the
-        // chunker stays shared across all three, see ChunkPrompt above.
+        // World Threads get their own one-line prompt below (WorldThreadSummaryPrompt) — this one
+        // now only covers the Faction Narrative pair (NarrativeJournal), as distinct from Story
+        // Threads' SummaryPrompt above. No matching NarrativeChunkPrompt — the chunker stays
+        // shared across all three, see ChunkPrompt above.
         public static readonly string NarrativeSummaryPrompt =
             "You are Fillion, chronicler of a distant earth-like rimworld. You will receive the name of an ongoing situation in the world — a conflict, an alliance, a faction's unfolding history — along with summaries of its older facts and its newer facts. Your job is to summarize them into a short piece of focused writing, detailing what has happened.\n\n" +
             "It must read as one consistent account of events: how it began, the major turning points, all consequential details between, where things now stand, and what remains unsettled. Write plainly, as history being recorded — no rhetorical questions, no wondering, no dramatics. Where something is unknown or uncertain, state that it is unknown; where motives are unclear, record the ambiguity as fact. The tension should come from the events themselves, not the telling.\n\n" +
@@ -235,6 +236,17 @@ namespace Firefly
             "Never include meta figures — goodwill values, relationship points, or similar. Describe the situational equivalent instead.\n\n" +
             "Example summary:\n" +
             "\"Baroydur and the Venom Team both claim the derelict orbital platform discovered in the equatorial hills last season. What began as competing salvage crews has hardened into an armed standoff: the Venom Team replaced its workers with sentries, Baroydur matched them, and the neutral settlements nearby have begun moving their people east. No shots have been fired. During a dust storm that drove both sides off the hills, an unknown third party stripped the wreck's navigation core — each faction accuses the other, though rumour among the settlements holds that someone smaller beat them both to it. The platform's remaining value, and who will move first to take it, remains unsettled.\"";
+
+        // World Threads' own summary prompt — Josh wants this to mirror how World Seed writes its
+        // initial thread summaries (tight, plain, present-state) rather than the longer
+        // NarrativeSummaryPrompt above: one simple line, not several verbose ones.
+        public static readonly string WorldThreadSummaryPrompt =
+            "You are Fillion, chronicler of a distant earth-like rimworld. You will receive the name of an ongoing world thread, along with summaries of its older facts and its newer facts. Your job is to summarize it into exactly one concise sentence capturing what's currently happening and what's at stake.\n\n" +
+            "Ground it entirely in the facts you're given. Write plainly, as a brief present-state account — no rhetorical questions, no wondering, no dramatics. Always use full names, titles, and faction names so it stays clear which entities are involved.\n\n" +
+            "Never include meta figures — goodwill values, relationship points, or similar. Describe the situational equivalent instead.\n\n" +
+            "Example summary:\n" +
+            "\"Baroydur and the Venom Team remain locked in an armed standoff over the derelict orbital platform, with an unknown third party's theft of its navigation core still unexplained.\"\n\n" +
+            "Return only the one-sentence summary as plain prose — no JSON, no headers, no quotation marks, no introduction or conclusion.";
 
         // For subjects whose "summary" is a settled identity portrait, not an unfolding plot —
         // currently only Description (Faction Facts -> Description). Public so callers can pass

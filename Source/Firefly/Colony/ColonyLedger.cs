@@ -568,7 +568,9 @@ namespace Firefly
 
         // ── Timeline buffer ───────────────────────────────────────────────────
 
-        private static Map ResolveMap()
+        // Also used by JournalRecorder.Tick — kept as one shared implementation rather than two
+        // copies drifting independently.
+        internal static Map ResolveMap()
         {
             var maps = Find.Maps;
             if (maps != null)

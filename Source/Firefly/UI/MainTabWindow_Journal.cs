@@ -1100,12 +1100,8 @@ namespace Firefly
             float tabW     = Mathf.Min(110f, (rect.width - (secs.Count - 1) * 2f) / secs.Count);
             var   tabBarY  = y;
 
-            // DrawNav's row-height helpers (ThreadRowHeight, WorldThreadRowHeight, FactionRowHeight)
-            // set Text.WordWrap = true to measure wrapped label heights and never reset it — that
-            // state otherwise leaks into these single-line centered tab labels and squishes them.
-            // Save/restore rather than hardcoding it back to true afterward — anything drawn after
-            // this tab bar (including other windows this same frame) shouldn't inherit an opinion
-            // this method doesn't actually own.
+            // These tabs are deliberately single-line even when the surrounding UI has enabled
+            // wrapping. Restore the caller's setting afterward because Unity text state is global.
             bool priorWordWrap = Text.WordWrap;
             Text.WordWrap = false;
 
