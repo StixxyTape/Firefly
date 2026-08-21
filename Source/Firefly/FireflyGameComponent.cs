@@ -50,6 +50,7 @@ namespace Firefly
         public override void GameComponentTick()
         {
             MainThreadQueue.Drain();
+            EventDecisionTracker.For(Verse.Current.Game)?.Tick();
             Recorder.Tick();
         }
 
@@ -63,6 +64,7 @@ namespace Firefly
         public override void GameComponentUpdate()
         {
             MainThreadQueue.Drain();
+            EventDecisionTracker.For(Verse.Current.Game)?.Tick();
         }
 
         public override void ExposeData()
@@ -73,7 +75,10 @@ namespace Firefly
             // every pending raid to commit (with vanilla text if Fillion hasn't answered yet)
             // before the save actually writes, so nothing is ever silently lost to a save/reload.
             if (Scribe.mode == LoadSaveMode.Saving)
+            {
                 RaidNarrativeTracker.For(Verse.Current.Game)?.CompleteAllPending();
+                EventDecisionTracker.For(Verse.Current.Game)?.CompleteAllPending();
+            }
 
             base.ExposeData();
             Scribe_Values.Look(ref _fireflyEnabled, "fireflyEnabled", true);

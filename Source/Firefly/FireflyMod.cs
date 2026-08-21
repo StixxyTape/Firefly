@@ -64,12 +64,15 @@ namespace Firefly
             ("Description chunk", FireflyWorldComponent.FactionIdentityChunkerLabel),
             ("Description summary", FireflyWorldComponent.FactionIdentitySummariserLabel),
             ("Faction tagline",  FireflyWorldComponent.FactionTaglineUpdaterLabel),
+            ("Event intent",     EventDeciderPrompts.IntentLabel),
+            ("Event parameters", EventDeciderPrompts.ParametersLabel),
         };
 
         public FireflyMod(ModContentPack content) : base(content)
         {
             Settings = GetSettings<FireflySettings>();
             Harmony = new Harmony("Stixxy.Firefly");
+            Patch_EventDeciderIntercept.Register(new DiseaseAdapter());
             Harmony.PatchAll();
             Log.Message("[Firefly] Initialized.");
         }
