@@ -72,7 +72,10 @@ namespace Firefly
         {
             Settings = GetSettings<FireflySettings>();
             Harmony = new Harmony("Stixxy.Firefly");
-            Patch_EventDeciderIntercept.Register(new DiseaseAdapter());
+            // Adapter registration happens later, in EventDeciderStartup — DefDatabase isn't
+            // populated yet at this point in the load sequence (mod constructors run before XML
+            // def parsing), so registering here would silently capture nothing. See that file's
+            // doc comment for the full explanation.
             Harmony.PatchAll();
             Log.Message("[Firefly] Initialized.");
         }

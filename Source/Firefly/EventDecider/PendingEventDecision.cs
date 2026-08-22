@@ -27,6 +27,5 @@ namespace Firefly
 
         public int RequestId;
         public int CreatedTick;
-        public float CreatedRealtime;
     }
 }

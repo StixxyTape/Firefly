@@ -9,9 +9,11 @@ using Verse;
 
 namespace Firefly
 {
-    // Defers a standard enemy raid's map-commit (spawning, letter, Lord) until Fillion has had a
-    // chance to rewrite its letter to match the colony's active story threads, or a short
-    // deadline expires. Any raid this patch doesn't recognize as a safe, plain vanilla path
+    // Defers a standard enemy raid's map-commit (spawning, letter, Lord) until Fillion's rewrite
+    // callback resolves — no independent hold-expiry (Josh's call, 2026-08-22: waits exactly as
+    // long as LLMClient's own configured retry/timeout settings take, same as every other call in
+    // the mod, worst case several minutes under default settings). Any raid this patch doesn't
+    // recognize as a safe, plain vanilla path
     // (custom pawnKind, an overridden strategy/arrival worker, non-map target, Firefly disabled,
     // no API key configured) falls through to vanilla completely untouched.
     //
@@ -354,16 +356,16 @@ namespace Firefly
         }
 
         // ------------------------------------------------------------------
-        // Phase 2 — commit. Runs on the main thread, either from Fillion's callback (via
-        // MainThreadQueue, same as every other LLMClient call in this codebase) or from the
-        // deadline check in RaidNarrativeTracker.Tick.
+        // Phase 2 — commit. Runs on the main thread from Fillion's callback (via MainThreadQueue,
+        // same as every other LLMClient call in this codebase) once LLMClient.Send's own
+        // retry/timeout handling finally succeeds or gives up, or from CompleteAllPending on save.
         // ------------------------------------------------------------------
 
         public static void Complete(int requestId, string narrativeTextOrNull)
         {
             var tracker = RaidNarrativeTracker.For(Verse.Current.Game);
             var pending = tracker?.Claim(requestId);
-            if (pending == null) return; // already committed (deadline beat the callback), or game changed under us
+            if (pending == null) return; // already committed by a save, or game changed under us
 
             if (!ReferenceEquals(Verse.Current.Game, pending.OwningGame))
             {

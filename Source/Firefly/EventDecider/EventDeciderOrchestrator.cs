@@ -10,9 +10,13 @@ namespace Firefly
     // validation, and resuming the incident remain main-thread responsibilities of the tracker.
     public static class EventDeciderOrchestrator
     {
-        // The tracker supplies the actual wall-clock deadline. This per-attempt ceiling prevents
-        // a request from lingering substantially beyond that deadline inside HttpClient.
-        private const int RequestTimeoutSeconds = 3;
+        // No per-call timeout override here — both LLM calls below use the player's global
+        // Request Timeout / Max Retries settings, same as every other call site in the mod
+        // (Josh's call, 2026-08-22: consistency over a special-cased short timeout). The actual
+        // safety net against a slow/retrying call holding up the game is EventDecisionTracker's
+        // own independent wall-clock expiry (HoldDeadlineSeconds), which doesn't care how long
+        // LLMClient.Send is still working in the background — it just resumes the incident
+        // untouched on its own schedule and discards whatever answer shows up late.
 
         public static void RequestDecision(EventDecisionRequest request,
             Action<EventDecisionResult> onDecided)
@@ -47,8 +51,7 @@ namespace Firefly
                     Log.Warning($"[Firefly:{EventDeciderPrompts.IntentLabel}] Failed for " +
                         $"{request.IncidentDefName}; firing untouched: {error}");
                     onDecided(null);
-                },
-                timeoutSeconds: RequestTimeoutSeconds);
+                });
         }
 
         private static void RequestParameters(EventDecisionRequest request, EventIntentResult intent,
@@ -76,8 +79,7 @@ namespace Firefly
                     Log.Warning($"[Firefly:{EventDeciderPrompts.ParametersLabel}] Failed for " +
                         $"{request.IncidentDefName}; firing untouched: {error}");
                     onDecided(null);
-                },
-                timeoutSeconds: RequestTimeoutSeconds);
+                });
         }
 
         private static string BuildIntentPrompt(EventDecisionRequest request)

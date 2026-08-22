@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using UnityEngine;
 using Verse;
 
 namespace Firefly
@@ -10,16 +9,14 @@ namespace Firefly
     // time with nothing fired or committed yet, so on load it's simplest and safest to just let
     // it go rather than carry an unresolved decision through the save system.
     //
-    // Unlike what older project notes describe for raids, there is no separate tick-based expiry
-    // timer here — RaidNarrativeTracker's real current shape has no Tick() method either; timeout
-    // is handled entirely by LLMClient's own configured request timeout/retry loop, whose
-    // onError ultimately calls back into the relevant Complete/resume path. This tracker follows
-    // that same real pattern rather than inventing a redundant parallel timer.
+    // Deliberately no independent hold-expiry here either (Josh's call, 2026-08-22, matching
+    // RaidNarrativeTracker): a pending incident waits exactly as long as LLMClient's own
+    // configured retry/timeout settings take, whatever that is for that player's config — same
+    // global settings every other call in the mod defers to. Worst case under default settings
+    // is several minutes per LLM call (up to two calls for an "existing thread" decision);
+    // accepted as the trade for consistency over a special-cased short timeout.
     public class EventDecisionTracker
     {
-        // Two sequential calls each have a three-second request ceiling. Give the second callback
-        // one extra second to reach the main-thread queue, then resume vanilla unconditionally.
-        private const float HoldDeadlineSeconds = 7f;
         private static Game _cachedGame;
         private static EventDecisionTracker _cachedTracker;
 
@@ -52,18 +49,6 @@ namespace Firefly
                 }
             }
             return null;
-        }
-
-        public void Tick()
-        {
-            if (_pending.Count == 0) return;
-            float now = Time.realtimeSinceStartup;
-            var expired = new List<int>();
-            foreach (var pending in _pending)
-                if (now - pending.CreatedRealtime >= HoldDeadlineSeconds)
-                    expired.Add(pending.RequestId);
-            foreach (int requestId in expired)
-                Patch_EventDeciderIntercept.Complete(requestId, null);
         }
 
         // Called right before a save writes — see FireflyGameComponent.ExposeData. Resumes every

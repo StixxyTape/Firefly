@@ -50,7 +50,6 @@ namespace Firefly
         public override void GameComponentTick()
         {
             MainThreadQueue.Drain();
-            EventDecisionTracker.For(Verse.Current.Game)?.Tick();
             Recorder.Tick();
         }
 
@@ -64,7 +63,6 @@ namespace Firefly
         public override void GameComponentUpdate()
         {
             MainThreadQueue.Drain();
-            EventDecisionTracker.For(Verse.Current.Game)?.Tick();
         }
 
         public override void ExposeData()

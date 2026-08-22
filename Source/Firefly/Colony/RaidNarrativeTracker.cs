@@ -12,6 +12,11 @@ namespace Firefly
     // already carries a reference to the game it belongs to.
     public class RaidNarrativeTracker
     {
+        // Deliberately no independent hold-expiry here (Josh's call, 2026-08-22): a pending raid
+        // waits exactly as long as LLMClient's own configured retry/timeout settings take,
+        // whatever that ends up being for that player's config — same global settings every other
+        // call in the mod defers to, no special-cased short timeout for this one feature. Worst
+        // case under default settings is several minutes; accepted as the trade for consistency.
         private static Game _cachedGame;
         private static RaidNarrativeTracker _cachedTracker;
 

@@ -64,7 +64,6 @@ namespace Firefly
                 OwningGame = Verse.Current.Game,
                 RequestId = _nextRequestId++,
                 CreatedTick = Find.TickManager.TicksGame,
-                CreatedRealtime = UnityEngine.Time.realtimeSinceStartup,
             };
 
             var tracker = EventDecisionTracker.For(Verse.Current.Game);
