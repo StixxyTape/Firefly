@@ -1,0 +1,1 @@
+Definitely the fastest model I've tested - but it seems to get confused and misunderstand the fact it's a 3rd person narrator, not someone in the colony. It also kind of just makes way too much stuff up sometimes. Speed wise - around 5 seconds. Very nice.
