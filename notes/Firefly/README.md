@@ -1,4 +1,4 @@
-# NeoGame notes
+# Firefly notes
 
 Josh's personal Obsidian vault from designing Firefly — working design reasoning, prompt
 experiments, and per-model notes (DeepSeek, Ling, etc.) written while figuring things out.
