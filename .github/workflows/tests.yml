@@ -1,0 +1,22 @@
+name: Pure tests
+
+# Only runs Firefly.PureTests (net8.0, no RimWorld/Verse/Unity dependency) — the main
+# Firefly.csproj targets net472 and needs RimWorld's own Managed assemblies to build,
+# which aren't available on a GitHub-hosted runner. This is a fast sanity check on the
+# dependency-free parsing logic, not a full build of the mod itself.
+on:
+  push:
+  pull_request:
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Run Firefly.PureTests
+        run: dotnet run --project tests/Firefly.PureTests/Firefly.PureTests.csproj
