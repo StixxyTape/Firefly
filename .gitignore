@@ -1,7 +1,10 @@
-# Build output
+# Build output — deliberately NOT ignoring Assemblies/*.dll: Firefly.dll and its
+# Newtonsoft.Json.dll runtime dependency (RimWorld doesn't bundle it, Harmony doesn't
+# either) both need to be committed so a fresh "Download ZIP"/clone runs immediately with
+# no build step, same as most published RimWorld mods (confirmed missing DLL was a real
+# bug — 2026-08-22). Rebuild and re-stage Assemblies/Firefly.dll after any C# change.
 bin/
 obj/
-Assemblies/*.dll
 
 # IDE
 .vs/
